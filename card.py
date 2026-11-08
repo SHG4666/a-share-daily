@@ -48,8 +48,9 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, bottoms: pd.Dat
             s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {color_pct(p['涨跌幅'])}"
                  f"　综合分 {p['score']:.2f}\n"
                  f"趋势年化 {p['trend_ann']:.0%}（R² {p['r2']:.2f}）｜波动 {p['vol']:.0%}｜60日回撤 {p['mdd']:.0%}\n"
-                 f"ROE≈{p['roe']:.0%}｜PE {p['市盈率-动态']:.0f}｜{p['industry'] if isinstance(p['industry'], str) else ''}"
-                 f"｜参考止损 {p['stop']:.2f}\n"
+                 f"ROE≈{p['roe']:.0%}｜PE {p['市盈率-动态']:.0f}｜"
+                 + (f"{p['industry']}｜" if isinstance(p['industry'], str) else "")
+                 + f"参考止损 {p['stop']:.2f}\n"
                  f"💡 {'、'.join(p['reasons']) or '各项均衡'}")
             if p["risks"]:
                 s += f"\n⚠️ {'、'.join(p['risks'])}"
@@ -67,7 +68,8 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, bottoms: pd.Dat
                  f"　综合分 {p['score']:.2f}\n"
                  f"前期跌幅 {p['decline']:.0%}（跌了 {p['down_days']:.0f} 天）｜距底部反弹 {p['rebound']:+.0%}"
                  f"｜年内位置 {p['position']:.0%}\n"
-                 f"量能 {p['vol_ratio']:.1f} 倍｜{ind}｜止损参考 跌破 {p['stop']:.2f}（近期底部）\n"
+                 f"量能 {p['vol_ratio']:.1f} 倍｜{ind + '｜' if ind else ''}"
+                 f"止损参考 跌破 {p['stop']:.2f}（近期底部，距现价 {p['stop'] / p['close'] - 1:.0%}）\n"
                  f"💡 {'、'.join(p['reasons']) or '各项均衡'}")
             if p["risks"]:
                 s += f"\n⚠️ {'、'.join(p['risks'])}"
@@ -89,7 +91,7 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, bottoms: pd.Dat
 
     els.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
                "稳健：行业中性化 EP/BP/ROE/低换手 → 趋势回归、波动、回撤、短期反转。"
-               "底部启动：一年跌幅≥30% + 低位 + 站上均线 + 放量 + 短期回归斜率转正。"
+               "底部启动：一年跌幅≥30% + 低位 + 反弹5~25% + 站上均线 + 放量 + 短期回归斜率转正。"
                "点击股票名查看雪球走势。仅供研究参考，不构成投资建议。"}]})
     return {"msg_type": "interactive", "card": {
         "config": {"wide_screen_mode": True},
