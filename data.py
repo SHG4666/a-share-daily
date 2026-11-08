@@ -1,6 +1,7 @@
 """数据获取层：所有 akshare 调用都在这里"""
 import datetime as dt
 import os
+import threading
 import time
 from functools import wraps
 from pathlib import Path
@@ -26,6 +27,33 @@ def retry(times=3, wait=3):
             raise last
         return wrapper
     return deco
+
+
+EM_STATE = {"dead": False}  # 东方财富一旦被判定限流，本次运行不再请求它
+
+
+def em_call(fn, *a, timeout: float = 30, **kw):
+    """带硬超时调用东方财富接口；失败或超时即标记限流，后续请求全部走备用源"""
+    if EM_STATE["dead"]:
+        raise RuntimeError("东方财富已限流，本次跳过")
+    box = {}
+
+    def run():
+        try:
+            box["v"] = fn(*a, **kw)
+        except Exception as e:  # noqa: BLE001
+            box["e"] = e
+
+    t = threading.Thread(target=run, daemon=True)  # daemon：超时后不阻塞进程退出
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        EM_STATE["dead"] = True
+        raise TimeoutError(f"东方财富请求超过 {timeout:.0f}s，判定限流")
+    if "e" in box:
+        EM_STATE["dead"] = True
+        raise box["e"]
+    return box["v"]
 
 
 def today_cn() -> dt.date:
@@ -57,14 +85,22 @@ def market_symbol(code: str) -> str:
 
 def _spot_em() -> pd.DataFrame:
     import akshare as ak
-    return ak.stock_zh_a_spot_em()
+    df = em_call(ak.stock_zh_a_spot_em, timeout=150)
+    DATA_DIR.mkdir(exist_ok=True)  # 缓存代码表，供备用源使用
+    df[["代码"]].rename(columns={"代码": "code"}).to_csv(DATA_DIR / "codes.csv", index=False)
+    return df
 
 
 def _spot_tencent() -> pd.DataFrame:
     """备用源：腾讯行情批量接口（不走东方财富，不受其限流影响）"""
     import akshare as ak
     import requests
-    codes = ak.stock_info_a_code_name()["code"].astype(str).str.zfill(6).tolist()
+    cache = DATA_DIR / "codes.csv"
+    if cache.exists():
+        codes = pd.read_csv(cache, dtype={"code": str})["code"].str.zfill(6).tolist()
+    else:
+        codes = ak.stock_info_a_code_name()["code"].astype(str).str.zfill(6).tolist()
+    print("腾讯源：代码表", len(codes), "只")
     rows = []
     for i in range(0, len(codes), 300):
         q = ",".join(market_symbol(c) for c in codes[i:i + 300])
@@ -108,7 +144,8 @@ def get_spot() -> pd.DataFrame:
 
 def _hist_em(code: str, start: str, end: str) -> pd.DataFrame:
     import akshare as ak
-    df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+    df = em_call(ak.stock_zh_a_hist, symbol=code, period="daily", start_date=start,
+                 end_date=end, adjust="qfq", timeout=20)
     return df.rename(columns={"日期": "date", "收盘": "close", "最高": "high", "最低": "low", "成交量": "vol"})
 
 
@@ -118,21 +155,16 @@ def _hist_sina(code: str, start: str, end: str) -> pd.DataFrame:
     return df.rename(columns={"volume": "vol"})
 
 
-_hist_em_dead = False  # 东方财富历史接口被限流后，本次运行剩余请求全部走新浪
-
-
 def get_hist(code: str, days: int = 420) -> pd.DataFrame:
     """前复权日线，列：date close high low vol"""
-    global _hist_em_dead
     end = today_cn()
     start, end_s = (end - dt.timedelta(days=days)).strftime("%Y%m%d"), end.strftime("%Y%m%d")
     df = None
-    if not _hist_em_dead:
+    if not EM_STATE["dead"]:
         try:
             df = _hist_em(code, start, end_s)
         except Exception as e:  # noqa: BLE001
-            print(f"东方财富历史数据失败（{code}），切换新浪：{str(e)[:80]}")
-            _hist_em_dead = True
+            print(f"东方财富历史数据失败（{code}），后续切换新浪：{str(e)[:80]}")
     if df is None:
         df = retry(times=2, wait=2)(_hist_sina)(code, start, end_s)
     df["date"] = to_date(df["date"])
@@ -153,7 +185,7 @@ def get_index(symbol: str = "sh000300") -> pd.DataFrame:
 def get_top_industries(n: int) -> pd.DataFrame | None:
     try:
         import akshare as ak
-        df = ak.stock_board_industry_name_em()
+        df = em_call(ak.stock_board_industry_name_em, timeout=30)
         df["涨跌幅"] = num(df["涨跌幅"])
         return df.sort_values("涨跌幅", ascending=False).head(n)
     except Exception as e:  # noqa: BLE001
@@ -172,23 +204,23 @@ def get_industry_map(max_age_days: int) -> dict[str, str]:
             return dict(zip(cached["code"], cached["industry"]))
     try:
         import akshare as ak
-        boards = ak.stock_board_industry_name_em()["板块名称"].tolist()
+        boards = em_call(ak.stock_board_industry_name_em, timeout=30)["板块名称"].tolist()
         rows, fails = [], 0
         for b in boards:
             try:
-                cons = ak.stock_board_industry_cons_em(symbol=b)
+                cons = em_call(ak.stock_board_industry_cons_em, symbol=b, timeout=20)
                 rows += [(str(c).zfill(6), b) for c in cons["代码"]]
                 fails = 0
             except Exception as e:  # noqa: BLE001
                 fails += 1
                 print("行业成分获取失败", b, str(e)[:80])
-                if fails >= 3:
+                if fails >= 3 or EM_STATE["dead"]:
                     print("连续失败，放弃本次行业分类更新")
                     break
             time.sleep(0.3)
-        if fails >= 3 and cached is None and rows:
+        if (fails >= 3 or EM_STATE["dead"]) and cached is None and rows:
             return dict(rows)  # 本次部分可用，但不写缓存
-        if fails < 3 and len(rows) > 3000:
+        if fails == 0 and not EM_STATE["dead"] and len(rows) > 3000:
             df = pd.DataFrame(rows, columns=["code", "industry"]).drop_duplicates("code")
             df["updated"] = today_cn().isoformat()
             DATA_DIR.mkdir(exist_ok=True)
