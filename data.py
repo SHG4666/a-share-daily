@@ -93,13 +93,13 @@ def _spot_em() -> pd.DataFrame:
 
 def _spot_tencent() -> pd.DataFrame:
     """备用源：腾讯行情批量接口（不走东方财富，不受其限流影响）"""
-    import akshare as ak
     import requests
     cache = DATA_DIR / "codes.csv"
     if cache.exists():
         codes = pd.read_csv(cache, dtype={"code": str})["code"].str.zfill(6).tolist()
-    else:
-        codes = ak.stock_info_a_code_name()["code"].astype(str).str.zfill(6).tolist()
+    else:  # 没有缓存时枚举沪深全部号段，腾讯只返回真实存在的代码
+        ranges = [(600000, 606000), (688000, 690000), (1, 4000), (300000, 303000)]
+        codes = [f"{i:06d}" for a, b in ranges for i in range(a, b)]
     print("腾讯源：代码表", len(codes), "只")
     rows = []
     for i in range(0, len(codes), 300):
@@ -116,6 +116,8 @@ def _spot_tencent() -> pd.DataFrame:
             if f[2] == "600519":
                 print("腾讯样本(茅台):", {k: v for k, v in rows[-1].items()})
         time.sleep(0.1)
+    if len(rows) < 3000:
+        raise RuntimeError(f"腾讯行情只返回 {len(rows)} 只，数据不完整")
     df = pd.DataFrame(rows)
     df["成交额"] = num(df["成交额"]) * 1e4   # 万元 -> 元
     df["总市值"] = num(df["总市值"]) * 1e8   # 亿元 -> 元
