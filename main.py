@@ -54,10 +54,14 @@ def num(s):
 
 # ---------------------------------------------------------------- 数据
 @retry()
-def is_trade_day(d: dt.date) -> bool:
+def trade_days() -> set[dt.date]:
     import akshare as ak
     days = ak.tool_trade_date_hist_sina()["trade_date"]
-    return d in set(pd.to_datetime(days).dt.date)
+    return set(pd.to_datetime(days).dt.date)
+
+
+def last_trade_day(d: dt.date, days: set[dt.date]) -> dt.date:
+    return max(x for x in days if x <= d)
 
 
 @retry()
@@ -273,9 +277,12 @@ def send_feishu(payload: dict):
 
 # ---------------------------------------------------------------- 入口
 def main():
-    day = today_cn()
-    if os.getenv("FORCE_RUN") != "1" and not is_trade_day(day):
-        print(f"{day} 非交易日，跳过"); return
+    today = today_cn()
+    days = trade_days()
+    if os.getenv("FORCE_RUN") != "1" and today not in days:
+        print(f"{today} 非交易日，跳过"); return
+    day = last_trade_day(today, days)  # 非交易日强制运行时，复盘最近一个交易日
+    print("复盘日期", day)
 
     spot = get_spot()
     print("全市场", len(spot), "只")
