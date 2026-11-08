@@ -53,6 +53,19 @@ def neutral_z(s: pd.Series, groups: pd.Series | None = None, min_group: int = 5)
     return out.fillna(0.0)
 
 
+# ---------------------------------------------------------------- 行业补全
+NAME_INDUSTRY = [("银行", "银行"), ("证券", "证券"), ("保险", "保险"), ("人寿", "保险")]
+
+
+def fill_industry(ind: pd.Series, names: pd.Series) -> pd.Series:
+    """行业缺失时按名称识别金融股（低估值、低换手，最容易在截面比较中霸榜）"""
+    ind = ind.copy()
+    for kw, label in NAME_INDUSTRY:
+        mask = ind.isna() & names.str.contains(kw, na=False)
+        ind[mask] = label
+    return ind
+
+
 # ---------------------------------------------------------------- 股票池
 def universe(spot: pd.DataFrame) -> pd.DataFrame:
     df = spot.dropna(subset=["最新价", "涨跌幅"]).copy()
@@ -71,8 +84,9 @@ def stage1(univ: pd.DataFrame, ind_map: dict[str, str]) -> pd.DataFrame:
     df["bp"] = 1 / df["市净率"]
     df["roe"] = df["市净率"] / df["市盈率-动态"]
     df["low_turn"] = -np.log(df["换手率"])
-    groups = df["代码"].map(ind_map) if ind_map else None
-    df["industry"] = groups if groups is not None else None
+    df["industry"] = fill_industry(df["代码"].map(ind_map) if ind_map else pd.Series(None, index=df.index, dtype=object),
+                                   df["名称"])
+    groups = df["industry"]
     df["s1"] = sum(w * neutral_z(df[f], groups) for f, w in config.STAGE1_WEIGHTS.items())
     print(f"第一阶段：{len(df)} 只盈利股参与打分，行业覆盖 {df['industry'].notna().mean():.0%}")
     return df.sort_values("s1", ascending=False).head(config.STAGE1_KEEP)
@@ -134,9 +148,8 @@ def stage2(cands: pd.DataFrame, stats: dict[str, dict], top_n: int) -> pd.DataFr
 
 
 def diversify(df: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """同一行业最多选 1 只，分散风险；没有行业信息时按名称识别银行"""
-    is_bank = df["名称"].str.contains("银行", na=False)
-    ind = df["industry"].where(df["industry"].notna(), pd.Series(np.where(is_bank, "银行", None), index=df.index))
+    """同一行业最多选 1 只，分散风险"""
+    ind = fill_industry(df["industry"], df["名称"])
     seen, keep = set(), []
     for i, g in ind.items():
         if isinstance(g, str):
