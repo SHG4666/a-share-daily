@@ -14,6 +14,11 @@ on:
         description: "只打印卡片，不推送飞书、不写数据"
         type: boolean
         default: false
+      spot_source:
+        description: "行情源（auto 先东方财富失败再腾讯；tencent 直接用腾讯）"
+        type: choice
+        options: [auto, tencent]
+        default: auto
 
 permissions:
   contents: write
@@ -36,6 +41,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          SPOT_SOURCE: ${{ github.event.inputs.spot_source }}
           TZ: Asia/Shanghai
       - name: 保存追踪数据
         if: github.event.inputs.dry_run != 'true'
