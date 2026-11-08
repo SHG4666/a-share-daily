@@ -1,0 +1,31 @@
+name: A股每日推荐
+
+on:
+  schedule:
+    # 北京时间周一到周五 16:07（UTC 08:07），收盘数据已稳定
+    - cron: "7 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "非交易日也强制运行"
+        type: boolean
+        default: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python main.py
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
+          TZ: Asia/Shanghai
