@@ -7,14 +7,21 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "非交易日也强制运行"
+        description: "非交易日也强制运行（复盘最近一个交易日）"
         type: boolean
         default: false
+      dry_run:
+        description: "只打印卡片，不推送飞书、不写数据"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,4 +35,12 @@ jobs:
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
           TZ: Asia/Shanghai
+      - name: 保存追踪数据
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || (git commit -m "data: $(TZ=Asia/Shanghai date +%F)" && git push)
