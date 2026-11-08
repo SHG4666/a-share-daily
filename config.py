@@ -25,6 +25,25 @@ STAGE2_WEIGHTS = {
 TOP_N = 5                      # 强势市场推荐数
 TOP_N_WEAK = 3                 # 弱势市场推荐数（沪深300 在 60 日线下）
 
+# ================= 进攻策略：底部启动 =================
+BOTTOM_MIN_PCT = 1.0               # 粗筛：今日涨幅 ≥ 1%
+BOTTOM_MIN_TURNOVER = 1.0          # 粗筛：换手率 ≥ 1%
+BOTTOM_CANDIDATES = 200            # 粗筛后拉历史数据的数量
+BOTTOM_MIN_DECLINE = 0.30          # 一年高点到近期低点至少跌 30%
+BOTTOM_MIN_DOWN_DAYS = 40          # 下跌持续至少 40 个交易日
+BOTTOM_REBOUND_RANGE = (0.05, 0.35)  # 距底部反弹幅度区间
+BOTTOM_MAX_POSITION = 0.45         # 一年价格区间分位上限
+BOTTOM_MIN_VOL_RATIO = 1.3         # 5 日均量 / 60 日均量
+BOTTOM_WEIGHTS = {
+    "vol_surge": 0.25,             # 放量强度
+    "launch": 0.25,                # 启动质量：10 日回归斜率 × R²
+    "depth": 0.15,                 # 前期跌幅深度
+    "base": 0.15,                  # 底部收敛：筑底期波动 / 长期波动
+    "low_pos": 0.10,               # 位置越低越好
+    "early": 0.10,                 # 反弹越早越好
+}
+BOTTOM_TOP_N = 5
+
 # ================= 风控 =================
 ATR_MULT = 2.0                 # 参考止损 = 收盘价 − ATR_MULT × ATR(14)
 

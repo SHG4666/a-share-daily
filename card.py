@@ -29,7 +29,8 @@ def md(text: str) -> dict:
     return {"tag": "markdown", "content": text}
 
 
-def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, watches, track, comment) -> dict:
+def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, bottoms: pd.DataFrame,
+          watches, track, comment) -> dict:
     up, down = int((spot["涨跌幅"] > 0).sum()), int((spot["涨跌幅"] < 0).sum())
     els = [md(f"**市场概况**　上涨 <font color='red'>{up}</font> / 下跌 <font color='green'>{down}</font>"
               f"　成交额 **{spot['成交额'].sum() / 1e12:.2f} 万亿**\n"
@@ -42,7 +43,7 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, watches, track,
 
     els.append({"tag": "hr"})
     if len(picks):
-        lines = [f"**📊 量化精选**（{picks['pool'].iloc[0]} 只通过全部条件，取综合分最高的 {len(picks)} 只）"]
+        lines = [f"**📊 稳健精选**（{picks['pool'].iloc[0]} 只通过全部条件，取综合分最高的 {len(picks)} 只）"]
         for i, (_, p) in enumerate(picks.iterrows(), 1):
             s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {color_pct(p['涨跌幅'])}"
                  f"　综合分 {p['score']:.2f}\n"
@@ -55,7 +56,27 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, watches, track,
             lines.append(s)
         els.append(md("\n\n".join(lines)))
     else:
-        els.append(md("**📊 量化精选**\n今天没有同时满足基本面和趋势条件的标的，空仓也是一种选择。"))
+        els.append(md("**📊 稳健精选**\n今天没有同时满足基本面和趋势条件的标的，空仓也是一种选择。"))
+
+    els.append({"tag": "hr"})
+    if len(bottoms):
+        lines = [f"**🚀 底部启动**（{bottoms['pool'].iloc[0]} 只符合「长期下跌 → 底部 → 放量启动」，取前 {len(bottoms)} 只）"]
+        for i, (_, p) in enumerate(bottoms.iterrows(), 1):
+            ind = p["industry"] if isinstance(p.get("industry"), str) else ""
+            s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {color_pct(p['涨跌幅'])}"
+                 f"　综合分 {p['score']:.2f}\n"
+                 f"前期跌幅 {p['decline']:.0%}（跌了 {p['down_days']:.0f} 天）｜距底部反弹 {p['rebound']:+.0%}"
+                 f"｜年内位置 {p['position']:.0%}\n"
+                 f"量能 {p['vol_ratio']:.1f} 倍｜{ind}｜止损参考 跌破 {p['stop']:.2f}（近期底部）\n"
+                 f"💡 {'、'.join(p['reasons']) or '各项均衡'}")
+            if p["risks"]:
+                s += f"\n⚠️ {'、'.join(p['risks'])}"
+            lines.append(s)
+        if not regime["strong"]:
+            lines.append("<font color='grey'>大盘处于弱势，抄底类信号失败率更高，注意仓位</font>")
+        els.append(md("\n\n".join(lines)))
+    else:
+        els.append(md("**🚀 底部启动**\n今天没有符合「长期下跌 → 底部 → 放量启动」的标的。"))
 
     if watches:
         els.append({"tag": "hr"})
@@ -67,7 +88,8 @@ def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, watches, track,
         els.append(md(f"**📈 策略追踪**\n{track}"))
 
     els.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
-               "模型：行业中性化 EP/BP/ROE/低换手 → 趋势回归(斜率×R²)、波动、回撤、短期反转综合打分。"
+               "稳健：行业中性化 EP/BP/ROE/低换手 → 趋势回归、波动、回撤、短期反转。"
+               "底部启动：一年跌幅≥30% + 低位 + 站上均线 + 放量 + 短期回归斜率转正。"
                "点击股票名查看雪球走势。仅供研究参考，不构成投资建议。"}]})
     return {"msg_type": "interactive", "card": {
         "config": {"wide_screen_mode": True},

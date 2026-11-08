@@ -1,4 +1,4 @@
-"""策略追踪：记录每日推荐，N 个交易日后用真实价格回测，统计胜率和超额收益"""
+"""策略追踪：记录每日推荐，N 个交易日后用真实价格回测，按策略分别统计胜率和超额收益"""
 import datetime as dt
 
 import pandas as pd
@@ -6,12 +6,15 @@ import pandas as pd
 from data import DATA_DIR
 
 PATH = DATA_DIR / "picks.csv"
-COLS = ["date", "code", "name", "close", "score", "ret", "bench"]
+COLS = ["date", "strategy", "code", "name", "close", "score", "ret", "bench"]
 
 
 def load() -> pd.DataFrame:
     if PATH.exists():
-        return pd.read_csv(PATH, dtype={"code": str, "date": str})
+        df = pd.read_csv(PATH, dtype={"code": str, "date": str})
+        if "strategy" not in df.columns:
+            df["strategy"] = "稳健"
+        return df.reindex(columns=COLS)
     return pd.DataFrame(columns=COLS)
 
 
@@ -20,11 +23,14 @@ def save(df: pd.DataFrame):
     df[COLS].to_csv(PATH, index=False)
 
 
-def record(df: pd.DataFrame, day: dt.date, picks: pd.DataFrame) -> pd.DataFrame:
-    df = df[df["date"] != day.isoformat()]
-    new = pd.DataFrame({"date": day.isoformat(), "code": picks["代码"], "name": picks["名称"],
-                        "close": picks["close"].round(3), "score": picks["score"].round(3)})
-    return pd.concat([df, new], ignore_index=True) if len(df) else new.reindex(columns=COLS)
+def record(df: pd.DataFrame, day: dt.date, strategy: str, picks: pd.DataFrame) -> pd.DataFrame:
+    df = df[~((df["date"] == day.isoformat()) & (df["strategy"] == strategy))]
+    if picks is None or picks.empty:
+        return df
+    new = pd.DataFrame({"date": day.isoformat(), "strategy": strategy, "code": picks["代码"].values,
+                        "name": picks["名称"].values, "close": picks["close"].round(3).values,
+                        "score": picks["score"].round(3).values})
+    return pd.concat([df, new], ignore_index=True).reindex(columns=COLS) if len(df) else new.reindex(columns=COLS)
 
 
 def _close_on(series: pd.DataFrame, d: dt.date) -> float | None:
@@ -59,13 +65,13 @@ def summary(df: pd.DataFrame, horizon: int) -> str | None:
     ev = df.dropna(subset=["ret"])
     if ev.empty:
         return None
-
-    def line(x, label):
+    out = []
+    for strat, x in ev.groupby("strategy"):
         ex = (x["ret"] - x["bench"]).mean()
-        return (f"{label} {len(x)} 只：{horizon}日胜率 **{(x['ret'] > 0).mean():.0%}**，"
+        line = (f"**{strat}** 累计 {len(x)} 只：{horizon}日胜率 **{(x['ret'] > 0).mean():.0%}**，"
                 f"平均收益 **{x['ret'].mean():+.2%}**，相对沪深300 **{ex:+.2%}**")
-
-    out = [line(ev, "累计")]
-    if len(ev) > 20:
-        out.append(line(ev.tail(20), "最近"))
+        if len(x) > 20:
+            y = x.tail(20)
+            line += f"（最近20只胜率 {(y['ret'] > 0).mean():.0%}，平均 {y['ret'].mean():+.2%}）"
+        out.append(line)
     return "\n".join(out)

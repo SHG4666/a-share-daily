@@ -15,9 +15,11 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import bottom
 import card
 import config
 import data
@@ -25,15 +27,38 @@ import model
 import tracker
 
 
-def fetch_stats(codes: list[str]) -> dict[str, dict]:
-    out = {}
-    for code in codes:
-        try:
-            out[code] = model.ts_stats(data.get_hist(code))
-        except Exception as e:  # noqa: BLE001
-            print("历史数据获取失败", code, e)
+_HIST: dict = {}
+
+
+def _fetch_one(code: str):
+    try:
         time.sleep(0.2)
-    return out
+        return data.get_hist(code)
+    except Exception as e:  # noqa: BLE001
+        print("历史数据获取失败", code, str(e)[:80])
+        return None
+
+
+def fetch_hists(codes: list[str]):
+    """并发拉取历史日线并缓存，同一只股票本次运行只拉一次"""
+    todo = [c for c in dict.fromkeys(codes) if c not in _HIST]
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for c, h in zip(todo, ex.map(_fetch_one, todo)):
+            if h is not None:
+                _HIST[c] = h
+    print(f"历史数据：新拉取 {len(todo)} 只，用时 {time.time() - t0:.0f}s")
+
+
+def hist(code: str):
+    if code not in _HIST:
+        _HIST[code] = data.get_hist(code)
+    return _HIST[code]
+
+
+def stats_for(codes, fn) -> dict[str, dict]:
+    fetch_hists(list(codes))
+    return {c: fn(_HIST[c]) for c in codes if c in _HIST}
 
 
 def ai_comment(regime: str, inds: str, picks) -> str | None:
@@ -90,33 +115,42 @@ def main():
     # 两阶段选股
     ind_map = data.get_industry_map(config.INDUSTRY_CACHE_DAYS)
     univ = model.universe(spot)
+    univ["industry"] = model.fill_industry(univ["代码"].map(ind_map), univ["名称"])
     print("股票池", len(univ), "只")
+
+    # 稳健：两阶段多因子
     cands = model.stage1(univ, ind_map)
-    stats = fetch_stats(cands["代码"].tolist())
+    stats = stats_for(cands["代码"].tolist(), model.ts_stats)
     top_n = config.TOP_N if regime["strong"] else config.TOP_N_WEAK
     picks = model.stage2(cands, stats, top_n)
-    print("入选", picks[["代码", "名称", "score"]].to_string() if len(picks) else "无")
+    print("稳健入选", picks[["代码", "名称", "score"]].to_string() if len(picks) else "无")
+
+    # 进攻：底部启动
+    bcands = bottom.prefilter(univ)
+    bstats = stats_for(bcands["代码"].tolist(), bottom.bottom_stats)
+    bottoms = bottom.select(bcands, bstats, config.BOTTOM_TOP_N)
+    print("底部启动入选", bottoms[["代码", "名称", "score"]].to_string() if len(bottoms) else "无")
 
     # 自选池
     spot_idx = spot.set_index("代码")
-    wstats = fetch_stats(list(config.WATCHLIST.values()))
+    wstats = stats_for(list(config.WATCHLIST.values()), model.ts_stats)
     watches = [dict(name=n, code=c, tag=model.watch_tag(wstats.get(c)),
                     pct=spot_idx["涨跌幅"].get(c)) for n, c in config.WATCHLIST.items()]
 
     # 策略追踪
-    hist = tracker.load()
-    hist = tracker.evaluate(hist, tdays, day, config.EVAL_HORIZON, data.get_hist, index_df)
-    if len(picks):
-        hist = tracker.record(hist, day, picks)
-    track = tracker.summary(hist, config.EVAL_HORIZON)
+    rec = tracker.load()
+    rec = tracker.evaluate(rec, tdays, day, config.EVAL_HORIZON, hist, index_df)
+    rec = tracker.record(rec, day, "稳健", picks)
+    rec = tracker.record(rec, day, "底部启动", bottoms)
+    track = tracker.summary(rec, config.EVAL_HORIZON)
     if not dry:
-        tracker.save(hist)
+        tracker.save(rec)
 
     inds = data.get_top_industries(config.TOP_INDUSTRY_N)
     ind_txt = "、".join(inds["板块名称"]) if inds is not None else "未知"
     comment = ai_comment(regime["text"], ind_txt, picks)
 
-    payload = card.build(day, spot, regime, inds, picks, watches, track, comment)
+    payload = card.build(day, spot, regime, inds, picks, bottoms, watches, track, comment)
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)
