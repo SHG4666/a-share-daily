@@ -130,7 +130,23 @@ def stage2(cands: pd.DataFrame, stats: dict[str, dict], top_n: int) -> pd.DataFr
     df["stop"] = df["close"] - config.ATR_MULT * df["atr"]
     df["risks"] = [risk_notes(r) for _, r in df.iterrows()]
     df["pool"] = len(df)
-    return df.sort_values("score", ascending=False).head(top_n)
+    return diversify(df.sort_values("score", ascending=False), top_n)
+
+
+def diversify(df: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    """同一行业最多选 1 只，分散风险；没有行业信息时按名称识别银行"""
+    is_bank = df["名称"].str.contains("银行", na=False)
+    ind = df["industry"].where(df["industry"].notna(), pd.Series(np.where(is_bank, "银行", None), index=df.index))
+    seen, keep = set(), []
+    for i, g in ind.items():
+        if isinstance(g, str):
+            if g in seen:
+                continue
+            seen.add(g)
+        keep.append(i)
+        if len(keep) == top_n:
+            break
+    return df.loc[keep]
 
 
 def risk_notes(r) -> list[str]:

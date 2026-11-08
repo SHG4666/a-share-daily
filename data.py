@@ -195,8 +195,38 @@ def get_top_industries(n: int) -> pd.DataFrame | None:
         return None
 
 
+def _industry_em() -> tuple[list, bool]:
+    import akshare as ak
+    boards = em_call(ak.stock_board_industry_name_em, timeout=30)["板块名称"].tolist()
+    rows = []
+    for b in boards:
+        try:
+            cons = em_call(ak.stock_board_industry_cons_em, symbol=b, timeout=20)
+            rows += [(str(c).zfill(6), b) for c in cons["代码"]]
+        except Exception as e:  # noqa: BLE001
+            print("东方财富行业成分失败", b, str(e)[:80])
+            return rows, False
+        time.sleep(0.3)
+    return rows, True
+
+
+def _industry_sina() -> tuple[list, bool]:
+    import akshare as ak
+    sec = ak.stock_sector_spot(indicator="新浪行业")
+    rows, ok = [], True
+    for _, r in sec.iterrows():
+        try:
+            d = ak.stock_sector_detail(sector=r["label"])
+            rows += [(str(c).zfill(6), r["板块"]) for c in d["code"]]
+        except Exception as e:  # noqa: BLE001
+            print("新浪行业成分失败", r.get("板块"), str(e)[:80])
+            ok = False
+        time.sleep(0.3)
+    return rows, ok
+
+
 def get_industry_map(max_age_days: int) -> dict[str, str]:
-    """股票 -> 东财行业。结果缓存到 data/industry.csv，过期才重新抓取"""
+    """股票 -> 行业。东方财富优先，失败用新浪；完整结果缓存到 data/industry.csv"""
     path = DATA_DIR / "industry.csv"
     cached = None
     if path.exists():
@@ -204,31 +234,22 @@ def get_industry_map(max_age_days: int) -> dict[str, str]:
         updated = dt.date.fromisoformat(str(cached["updated"].iloc[0]))
         if (today_cn() - updated).days < max_age_days:
             return dict(zip(cached["code"], cached["industry"]))
-    try:
-        import akshare as ak
-        boards = em_call(ak.stock_board_industry_name_em, timeout=30)["板块名称"].tolist()
-        rows, fails = [], 0
-        for b in boards:
-            try:
-                cons = em_call(ak.stock_board_industry_cons_em, symbol=b, timeout=20)
-                rows += [(str(c).zfill(6), b) for c in cons["代码"]]
-                fails = 0
-            except Exception as e:  # noqa: BLE001
-                fails += 1
-                print("行业成分获取失败", b, str(e)[:80])
-                if fails >= 3 or EM_STATE["dead"]:
-                    print("连续失败，放弃本次行业分类更新")
-                    break
-            time.sleep(0.3)
-        if (fails >= 3 or EM_STATE["dead"]) and cached is None and rows:
-            return dict(rows)  # 本次部分可用，但不写缓存
-        if fails == 0 and not EM_STATE["dead"] and len(rows) > 3000:
+    best = []
+    for name, fn in [("东方财富", _industry_em), ("新浪", _industry_sina)]:
+        try:
+            rows, complete = fn()
+        except Exception as e:  # noqa: BLE001
+            print(f"行业分类（{name}）失败：{str(e)[:120]}")
+            continue
+        print(f"行业分类（{name}）：{len(rows)} 条，{'完整' if complete else '不完整'}")
+        if complete and len(rows) > 3000:
             df = pd.DataFrame(rows, columns=["code", "industry"]).drop_duplicates("code")
             df["updated"] = today_cn().isoformat()
             DATA_DIR.mkdir(exist_ok=True)
             df.to_csv(path, index=False)
-            print("行业分类已更新", len(df), "只")
             return dict(zip(df["code"], df["industry"]))
-    except Exception as e:  # noqa: BLE001
-        print("行业分类更新失败:", e)
-    return dict(zip(cached["code"], cached["industry"])) if cached is not None else {}
+        if len(rows) > len(best):
+            best = rows
+    if cached is not None:
+        return dict(zip(cached["code"], cached["industry"]))
+    return dict(best)
