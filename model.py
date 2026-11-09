@@ -58,11 +58,10 @@ NAME_INDUSTRY = [("银行", "银行"), ("证券", "证券"), ("保险", "保险"
 
 
 def fill_industry(ind: pd.Series, names: pd.Series) -> pd.Series:
-    """行业缺失时按名称识别金融股（低估值、低换手，最容易在截面比较中霸榜）"""
+    """按名称统一金融股行业（不同数据源对银行的分类名不一致，统一后才能正确中性化和分散）"""
     ind = ind.copy()
     for kw, label in NAME_INDUSTRY:
-        mask = ind.isna() & names.str.contains(kw, na=False)
-        ind[mask] = label
+        ind[names.str.contains(kw, na=False)] = label
     return ind
 
 

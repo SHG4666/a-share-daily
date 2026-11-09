@@ -191,7 +191,14 @@ def get_top_industries(n: int) -> pd.DataFrame | None:
         df["涨跌幅"] = num(df["涨跌幅"])
         return df.sort_values("涨跌幅", ascending=False).head(n)
     except Exception as e:  # noqa: BLE001
-        print("行业涨幅获取失败:", e)
+        print("行业涨幅（东方财富）失败，改用新浪:", str(e)[:60])
+    try:
+        import akshare as ak
+        df = ak.stock_sector_spot(indicator="新浪行业").rename(columns={"板块": "板块名称"})
+        df["涨跌幅"] = num(df["涨跌幅"])
+        return df.sort_values("涨跌幅", ascending=False).head(n)[["板块名称", "涨跌幅"]]
+    except Exception as e:  # noqa: BLE001
+        print("行业涨幅（新浪）失败:", e)
         return None
 
 
