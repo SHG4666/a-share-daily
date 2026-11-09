@@ -17,13 +17,16 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pandas as pd
 import requests
 
-import bottom
+import alloc
 import card
 import config
 import data
 import model
+import review
+import strategies
 import tracker
 
 
@@ -56,16 +59,43 @@ def hist(code: str):
     return _HIST[code]
 
 
-def stats_for(codes, fn) -> dict[str, dict]:
-    fetch_hists(list(codes))
-    return {c: fn(_HIST[c]) for c in codes if c in _HIST}
+def merge(cand: dict, res: dict, names: list[str]) -> pd.DataFrame:
+    """按分配的名额从各策略取股票：跨策略去重、同行业不超过 MAX_PER_INDUSTRY 只；
+    某策略候选不够时，剩余名额顺延给胜出概率更高的策略"""
+    slots = dict(res["slots"])
+    order = sorted(names, key=lambda n: -res["p_best"].get(n, 0))
+    chosen, used, ind_cnt = [], set(), {}
+    ptr = {n: 0 for n in names}
+
+    def take(n) -> bool:
+        df = cand[n]
+        while ptr[n] < len(df):
+            r = df.iloc[ptr[n]]; ptr[n] += 1
+            ind = r.get("industry") if isinstance(r.get("industry"), str) else None
+            if r["代码"] in used or (ind and ind_cnt.get(ind, 0) >= config.MAX_PER_INDUSTRY):
+                continue
+            used.add(r["代码"]); chosen.append(r)
+            if ind:
+                ind_cnt[ind] = ind_cnt.get(ind, 0) + 1
+            return True
+        return False
+
+    left = 0
+    for n in order:
+        for _ in range(slots.get(n, 0)):
+            if not take(n):
+                left += 1
+    for n in order:
+        while left and take(n):
+            left -= 1
+    return pd.DataFrame(chosen).reset_index(drop=True) if chosen else pd.DataFrame()
 
 
 def ai_comment(regime: str, inds: str, picks) -> str | None:
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
         return None
-    brief = "; ".join(f"{r['名称']}({r['industry']}, 趋势年化{r['trend_ann']:.0%})" for _, r in picks.iterrows())
+    brief = "; ".join(f"{r['名称']}({r['strategy']})" for _, r in picks.iterrows())
     prompt = (f"今日A股：{regime}。领涨行业：{inds}。量化模型入选：{brief or '无'}。"
               "请用不超过120字给出客观的盘面点评和需关注的风险，不要给买卖建议。")
     try:
@@ -107,6 +137,7 @@ def main():
         print(f"{day} 已推送过，跳过（多个定时触发的兜底去重）"); return
 
     spot = data.get_spot()
+    spot_idx = spot.set_index("代码")
     print("全市场", len(spot), "只")
     try:
         index_df = data.get_index("sh000300")
@@ -115,45 +146,71 @@ def main():
     regime = model.market_regime(index_df)
     print("市场状态", regime)
 
-    # 两阶段选股
     ind_map = data.get_industry_map(config.INDUSTRY_CACHE_DAYS)
     univ = model.universe(spot)
     univ["industry"] = model.fill_industry(univ["代码"].map(ind_map), univ["名称"])
     print("股票池", len(univ), "只")
 
-    # 稳健：两阶段多因子
-    cands = model.stage1(univ, ind_map)
-    stats = stats_for(cands["代码"].tolist(), model.ts_stats)
-    top_n = config.TOP_N if regime["strong"] else config.TOP_N_WEAK
-    picks = model.stage2(cands, stats, top_n)
-    print("稳健入选", picks[["代码", "名称", "score"]].to_string() if len(picks) else "无")
-
-    # 进攻：底部启动
-    bcands = bottom.prefilter(univ)
-    bstats = stats_for(bcands["代码"].tolist(), bottom.bottom_stats)
-    bottoms = bottom.select(bcands, bstats, config.BOTTOM_TOP_N)
-    print("底部启动入选", bottoms[["代码", "名称", "score"]].to_string() if len(bottoms) else "无")
-
-    # 自选池
-    spot_idx = spot.set_index("代码")
-    wstats = stats_for(list(config.WATCHLIST.values()), model.ts_stats)
-    watches = [dict(name=n, code=c, tag=model.watch_tag(wstats.get(c)),
-                    pct=spot_idx["涨跌幅"].get(c)) for n, c in config.WATCHLIST.items()]
-
-    # 策略追踪
+    # 1) 复盘：补算历史推荐的 1/3/5 日表现
     rec = tracker.load()
-    rec = tracker.evaluate(rec, tdays, day, config.EVAL_HORIZON, hist, index_df)
-    rec = tracker.record(rec, day, "稳健", picks)
-    rec = tracker.record(rec, day, "底部启动", bottoms)
-    track = tracker.summary(rec, config.EVAL_HORIZON)
+    past = [d.isoformat() for d in tdays if d < day]
+    recent_codes = set(rec.loc[rec["date"].isin(past[-config.RECENT_EXCLUDE_DAYS:]), "code"])
+    track_codes = rec.loc[rec["date"].isin(past[-15:]), "code"].tolist()
+
+    # 2) 各策略粗筛 → 合并后一次性并发拉取历史数据
+    ctx = {"ind_map": ind_map}
+    pre = {s.name: s.prefilter(univ, ctx) for s in strategies.ALL}
+    for n, df in pre.items():
+        print(f"{n} 粗筛 {len(df)} 只")
+    fetch_hists([c for df in pre.values() for c in df["代码"]] + track_codes)
+
+    rec = tracker.evaluate(rec, tdays, day, hist, index_df)
+
+    # 3) 各策略精选（排除最近几天已推荐过的）
+    cand = {}
+    for s in strategies.ALL:
+        try:
+            df = s.select(pre[s.name], _HIST)
+        except Exception as e:  # noqa: BLE001
+            import traceback; traceback.print_exc()
+            print(f"策略 {s.name} 失败：{e}")
+            df = pd.DataFrame()
+        if len(df):
+            df = df[~df["代码"].isin(recent_codes)].copy()
+            df["strategy"] = s.name
+        cand[s.name] = df
+        print(f"{s.name} 可用候选 {len(df)} 只")
+
+    # 4) 根据近期表现分配名额
+    names = [s.name for s in strategies.ALL]
+    post = alloc.posteriors(rec, names, tdays, day)
+    total = config.TOTAL_SLOTS if regime["strong"] else config.TOTAL_SLOTS_WEAK
+    avail = {n: len(cand[n]) for n in names}
+    res = alloc.allocate(post, avail, total, seed=int(day.strftime("%Y%m%d")))
+    print("名额分配", res)
+    picks = merge(cand, res, names)
+    print("今日推荐", picks[["代码", "名称", "strategy", "score"]].to_string() if len(picks) else "无")
+
+    # 5) 复盘文本、跟踪池、战绩
+    prev_day = max((d for d in tdays if d < day), default=None)
+    review_txt = review.yesterday(rec, prev_day, spot_idx, review.index_ret_on(index_df, day))
+    alloc_hist = alloc.load()
+    adjust_txt = review.adjustment(post, res, alloc.previous_slots(alloc_hist, day))
+    pool_lines = review.tracking_pool(rec, tdays, day, spot_idx, _HIST)
+    board_txt = review.scoreboard(tracker.stats_by_strategy(rec))
+    details = {r["代码"]: strategies.safe_detail(r["strategy"], r) for _, r in picks.iterrows()}
+
+    rec = tracker.record(rec, day, picks)
     if not dry:
         tracker.save(rec)
+        alloc.save(alloc_hist, day, post, res)
 
     inds = data.get_top_industries(config.TOP_INDUSTRY_N)
     ind_txt = "、".join(inds["板块名称"]) if inds is not None else "未知"
     comment = ai_comment(regime["text"], ind_txt, picks)
 
-    payload = card.build(day, spot, regime, inds, picks, bottoms, watches, track, comment)
+    payload = card.build(day, spot, regime, inds, review_txt, adjust_txt, picks, pool_lines, board_txt,
+                         comment, details)
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)

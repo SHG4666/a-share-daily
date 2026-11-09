@@ -182,15 +182,3 @@ def market_regime(idx: pd.DataFrame | None) -> dict:
     strong = c.iloc[-1] > ma60
     text = f"沪深300 {'站上' if strong else '跌破'} 60 日线，近 20 日 {r20:+.1%}"
     return {"strong": strong, "text": text}
-
-
-def watch_tag(s: dict | None) -> str:
-    if not s:
-        return "数据不足"
-    if s["trend_ann"] > 0 and s["r2"] >= 0.5 and s["close"] > s["ma60"]:
-        t = f"📈 稳健上行（年化{s['trend_ann']:.0%}，R² {s['r2']:.2f}）"
-    elif s["close"] < s["ma60"]:
-        t = "📉 60日线下方"
-    else:
-        t = f"〰️ 震荡（R² {s['r2']:.2f}）"
-    return f"{t}｜5日 {s['rev5']:+.1%}"

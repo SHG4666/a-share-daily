@@ -1,21 +1,26 @@
-"""策略追踪：记录每日推荐，N 个交易日后用真实价格回测，按策略分别统计胜率和超额收益"""
+"""推荐记录与回测：每只推荐记录次日 / 3 日 / 5 日收益、同期沪深300 收益、5 日内上涨天数"""
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 
 from data import DATA_DIR
 
 PATH = DATA_DIR / "picks.csv"
-COLS = ["date", "strategy", "code", "name", "close", "score", "ret", "bench"]
+COLS = ["date", "strategy", "code", "name", "close", "stop", "score",
+        "r1", "r3", "r5", "b1", "b3", "b5", "up5"]
+LEGACY = {"稳健": "稳健多因子"}
 
 
 def load() -> pd.DataFrame:
-    if PATH.exists():
-        df = pd.read_csv(PATH, dtype={"code": str, "date": str})
-        if "strategy" not in df.columns:
-            df["strategy"] = "稳健"
-        return df.reindex(columns=COLS)
-    return pd.DataFrame(columns=COLS)
+    if not PATH.exists():
+        return pd.DataFrame(columns=COLS)
+    df = pd.read_csv(PATH, dtype={"code": str, "date": str})
+    if "strategy" not in df.columns:
+        df["strategy"] = "稳健多因子"
+    df["strategy"] = df["strategy"].replace(LEGACY)
+    df["code"] = df["code"].str.zfill(6)
+    return df.reindex(columns=COLS)
 
 
 def save(df: pd.DataFrame):
@@ -23,55 +28,65 @@ def save(df: pd.DataFrame):
     df[COLS].to_csv(PATH, index=False)
 
 
-def record(df: pd.DataFrame, day: dt.date, strategy: str, picks: pd.DataFrame) -> pd.DataFrame:
-    df = df[~((df["date"] == day.isoformat()) & (df["strategy"] == strategy))]
+def record(df: pd.DataFrame, day: dt.date, picks: pd.DataFrame) -> pd.DataFrame:
+    df = df[df["date"] != day.isoformat()]
     if picks is None or picks.empty:
         return df
-    new = pd.DataFrame({"date": day.isoformat(), "strategy": strategy, "code": picks["代码"].values,
-                        "name": picks["名称"].values, "close": picks["close"].round(3).values,
-                        "score": picks["score"].round(3).values})
-    return pd.concat([df, new], ignore_index=True).reindex(columns=COLS) if len(df) else new.reindex(columns=COLS)
+    new = pd.DataFrame({"date": day.isoformat(), "strategy": picks["strategy"].values,
+                        "code": picks["代码"].values, "name": picks["名称"].values,
+                        "close": picks["close"].round(3).values, "stop": picks["stop"].round(3).values,
+                        "score": picks["score"].round(3).values}).reindex(columns=COLS)
+    return pd.concat([df, new], ignore_index=True) if len(df) else new
 
 
-def _close_on(series: pd.DataFrame, d: dt.date) -> float | None:
-    hit = series.loc[series["date"] == d, "close"]
-    return float(hit.iloc[0]) if len(hit) else None
+def _closes(series: pd.DataFrame | None, days: list[dt.date]) -> list[float | None]:
+    if series is None:
+        return [None] * len(days)
+    m = dict(zip(series["date"], series["close"]))
+    return [m.get(d) for d in days]
 
 
-def evaluate(df: pd.DataFrame, tdays: list[dt.date], day: dt.date, horizon: int,
-             hist_fn, index_df: pd.DataFrame | None) -> pd.DataFrame:
+def evaluate(df: pd.DataFrame, tdays: list[dt.date], day: dt.date, hist_fn,
+             index_df: pd.DataFrame | None, lookback: int = 15) -> pd.DataFrame:
+    """补算还没完成 5 日评估、且在最近 lookback 个交易日内的推荐"""
     df = df.copy()
-    for i, r in df[df["ret"].isna()].iterrows():
+    recent = {d.isoformat() for d in tdays if d <= day}
+    recent = set(sorted(recent)[-lookback:])
+    todo = df[df["r5"].isna() & df["date"].isin(recent)]
+    for i, r in todo.iterrows():
         d = dt.date.fromisoformat(r["date"])
-        after = [t for t in tdays if d < t <= day]
-        if len(after) < horizon:
+        after = [t for t in tdays if d < t <= day][:5]
+        if not after:
             continue
-        target = after[horizon - 1]
         try:
             h = hist_fn(r["code"])
-            p0, p1 = _close_on(h, d), _close_on(h, target)
-            if p0 and p1:
-                df.at[i, "ret"] = round(p1 / p0 - 1, 5)
-            if index_df is not None:
-                b0, b1 = _close_on(index_df, d), _close_on(index_df, target)
-                if b0 and b1:
-                    df.at[i, "bench"] = round(b1 / b0 - 1, 5)
         except Exception as e:  # noqa: BLE001
-            print("回测失败", r["code"], e)
+            print("回测取数失败", r["code"], e)
+            continue
+        p0, *ps = _closes(h, [d] + after)
+        b0, *bs = _closes(index_df, [d] + after)
+        for k in (1, 3, 5):
+            if len(after) >= k and ps[k - 1] and p0:
+                df.at[i, f"r{k}"] = round(ps[k - 1] / p0 - 1, 5)
+                if bs[k - 1] and b0:
+                    df.at[i, f"b{k}"] = round(bs[k - 1] / b0 - 1, 5)
+        if len(after) >= 5 and p0 and all(ps):
+            seq = np.array([p0] + ps, float)
+            df.at[i, "up5"] = int((np.diff(seq) > 0).sum())
     return df
 
 
-def summary(df: pd.DataFrame, horizon: int) -> str | None:
-    ev = df.dropna(subset=["ret"])
+def stats_by_strategy(df: pd.DataFrame) -> pd.DataFrame:
+    ev = df.dropna(subset=["r1"])
     if ev.empty:
-        return None
-    out = []
-    for strat, x in ev.groupby("strategy"):
-        ex = (x["ret"] - x["bench"]).mean()
-        line = (f"**{strat}** 累计 {len(x)} 只：{horizon}日胜率 **{(x['ret'] > 0).mean():.0%}**，"
-                f"平均收益 **{x['ret'].mean():+.2%}**，相对沪深300 **{ex:+.2%}**")
-        if len(x) > 20:
-            y = x.tail(20)
-            line += f"（最近20只胜率 {(y['ret'] > 0).mean():.0%}，平均 {y['ret'].mean():+.2%}）"
-        out.append(line)
-    return "\n".join(out)
+        return pd.DataFrame()
+    rows = []
+    for s, x in ev.groupby("strategy"):
+        x3 = x.dropna(subset=["r3"])
+        x5 = x.dropna(subset=["up5"])
+        rows.append(dict(
+            strategy=s, n=len(x), win1=(x["r1"] > 0).mean(), avg1=x["r1"].mean(),
+            n3=len(x3), ex3=(x3["r3"] - x3["b3"].fillna(0)).mean() if len(x3) else np.nan,
+            up5=x5["up5"].mean() if len(x5) else np.nan,
+        ))
+    return pd.DataFrame(rows)

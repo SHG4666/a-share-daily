@@ -15,83 +15,64 @@ def xueqiu(code: str) -> str:
 
 
 def link(name: str, code: str) -> str:
-    return f"[{name}]({xueqiu(code)})"
+    return f"[{str(name).replace(' ', '')}]({xueqiu(code)})"
 
 
-def color_pct(p) -> str:
-    if p is None or pd.isna(p):
+def pct_s(x, nd: int = 1) -> str:
+    """小数收益率 → 带颜色百分比（A 股习惯：红涨绿跌）"""
+    if x is None or pd.isna(x):
         return "-"
-    c = "red" if p > 0 else ("green" if p < 0 else "grey")
-    return f"<font color='{c}'>{p:+.2f}%</font>"
+    c = "red" if x > 0 else ("green" if x < 0 else "grey")
+    return f"<font color='{c}'>{x * 100:+.{nd}f}%</font>"
 
 
 def md(text: str) -> dict:
     return {"tag": "markdown", "content": text}
 
 
-def build(day: dt.date, spot, regime, inds, picks: pd.DataFrame, bottoms: pd.DataFrame,
-          watches, track, comment) -> dict:
+HR = {"tag": "hr"}
+
+
+def build(day: dt.date, spot, regime, inds, review_txt, adjust_txt, picks: pd.DataFrame,
+          pool_lines: list[str], board_txt, comment, details: dict) -> dict:
+    from strategies import tag
     up, down = int((spot["涨跌幅"] > 0).sum()), int((spot["涨跌幅"] < 0).sum())
     els = [md(f"**市场概况**　上涨 <font color='red'>{up}</font> / 下跌 <font color='green'>{down}</font>"
               f"　成交额 **{spot['成交额'].sum() / 1e12:.2f} 万亿**\n"
-              f"**市场状态**　{regime['text']}" + ("" if regime["strong"] else "　⚠️ 弱势，推荐数已下调"))]
+              f"**市场状态**　{regime['text']}" + ("" if regime["strong"] else "　⚠️ 弱势"))]
     if inds is not None and len(inds):
-        els.append(md("**领涨行业**　" + "　".join(f"{r['板块名称']} {color_pct(r['涨跌幅'])}"
+        els.append(md("**领涨行业**　" + "　".join(f"{r['板块名称']} {pct_s(r['涨跌幅'] / 100, 2)}"
                                                   for _, r in inds.iterrows())))
     if comment:
         els.append(md(f"**AI 点评**\n{comment}"))
 
-    els.append({"tag": "hr"})
+    els += [HR, md("**📝 昨日复盘**\n" + (review_txt or "暂无上一交易日的推荐记录。"))]
+    els.append(md("**🔧 今日策略调整**\n" + adjust_txt))
+
+    els.append(HR)
     if len(picks):
-        lines = [f"**📊 稳健精选**（{picks['pool'].iloc[0]} 只通过全部条件，取综合分最高的 {len(picks)} 只）"]
+        lines = [f"**🎯 今日推荐**（{len(picks)} 只）"]
         for i, (_, p) in enumerate(picks.iterrows(), 1):
-            s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {color_pct(p['涨跌幅'])}"
-                 f"　综合分 {p['score']:.2f}\n"
-                 f"趋势年化 {p['trend_ann']:.0%}（R² {p['r2']:.2f}）｜波动 {p['vol']:.0%}｜60日回撤 {p['mdd']:.0%}\n"
-                 f"ROE≈{p['roe']:.0%}｜PE {p['市盈率-动态']:.0f}｜"
-                 + (f"{p['industry']}｜" if isinstance(p['industry'], str) else "")
-                 + f"参考止损 {p['stop']:.2f}\n"
+            ind = p.get("industry")
+            s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {pct_s(p['涨跌幅'] / 100, 2)}"
+                 f"　{tag(p['strategy'])}{p['strategy']}" + (f"｜{ind}" if isinstance(ind, str) else "") + "\n"
+                 f"{details.get(p['代码'], '')}\n"
+                 f"止损参考 {p['stop']:.2f}（距现价 {p['stop'] / p['close'] - 1:.0%}）\n"
                  f"💡 {'、'.join(p['reasons']) or '各项均衡'}")
             if p["risks"]:
                 s += f"\n⚠️ {'、'.join(p['risks'])}"
             lines.append(s)
         els.append(md("\n\n".join(lines)))
     else:
-        els.append(md("**📊 稳健精选**\n今天没有同时满足基本面和趋势条件的标的，空仓也是一种选择。"))
+        els.append(md("**🎯 今日推荐**\n今天所有策略都没有满足条件的标的，空仓也是一种选择。"))
 
-    els.append({"tag": "hr"})
-    if len(bottoms):
-        lines = [f"**🚀 底部启动**（{bottoms['pool'].iloc[0]} 只符合「长期下跌 → 底部 → 放量启动」，取前 {len(bottoms)} 只）"]
-        for i, (_, p) in enumerate(bottoms.iterrows(), 1):
-            ind = p["industry"] if isinstance(p.get("industry"), str) else ""
-            s = (f"**{i}. {link(p['名称'], p['代码'])}** {p['代码']}　{p['最新价']:.2f} {color_pct(p['涨跌幅'])}"
-                 f"　综合分 {p['score']:.2f}\n"
-                 f"前期跌幅 {p['decline']:.0%}（跌了 {p['down_days']:.0f} 天）｜距底部反弹 {p['rebound']:+.0%}"
-                 f"｜年内位置 {p['position']:.0%}\n"
-                 f"量能 {p['vol_ratio']:.1f} 倍｜{ind + '｜' if ind else ''}"
-                 f"止损参考 跌破 {p['stop']:.2f}（近期底部，距现价 {p['stop'] / p['close'] - 1:.0%}）\n"
-                 f"💡 {'、'.join(p['reasons']) or '各项均衡'}")
-            if p["risks"]:
-                s += f"\n⚠️ {'、'.join(p['risks'])}"
-            lines.append(s)
-        if not regime["strong"]:
-            lines.append("<font color='grey'>大盘处于弱势，抄底类信号失败率更高，注意仓位</font>")
-        els.append(md("\n\n".join(lines)))
-    else:
-        els.append(md("**🚀 底部启动**\n今天没有符合「长期下跌 → 底部 → 放量启动」的标的。"))
-
-    if watches:
-        els.append({"tag": "hr"})
-        els.append(md("**👀 自选主题池**\n" + "\n".join(
-            f"{link(w['name'], w['code'])} {color_pct(w['pct'])}　{w['tag']}" for w in watches)))
-
-    if track:
-        els.append({"tag": "hr"})
-        els.append(md(f"**📈 策略追踪**\n{track}"))
+    if pool_lines:
+        els += [HR, md(f"**📌 推荐跟踪池**（最近 {len(pool_lines)} 只，按推荐后累计涨幅排序）\n" + "\n".join(pool_lines))]
+    if board_txt:
+        els += [HR, md("**📈 策略战绩**（全部历史推荐）\n" + board_txt)]
 
     els.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
-               "稳健：行业中性化 EP/BP/ROE/低换手 → 趋势回归、波动、回撤、短期反转。"
-               "底部启动：一年跌幅≥30% + 低位 + 反弹5~25% + 站上均线 + 放量 + 短期回归斜率转正。"
+               "🔥强势延续 ↩️趋势回踩 🚀底部启动 🛡️稳健多因子。每天按各策略近期真实收益自动调整名额。"
                "点击股票名查看雪球走势。仅供研究参考，不构成投资建议。"}]})
     return {"msg_type": "interactive", "card": {
         "config": {"wide_screen_mode": True},
