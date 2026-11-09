@@ -1,0 +1,53 @@
+name: 策略夜间回测
+
+on:
+  schedule:
+    # 北京时间周一到周五 22:07（UTC 14:07）：回放过去 60 个交易日，对比各策略真实效果
+    - cron: "7 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "非交易日也运行"
+        type: boolean
+        default: false
+      dry_run:
+        description: "只打印报告，不推送飞书、不写数据"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a-share-daily
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python backtest.py
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          SPOT_SOURCE: tencent
+          PYTHONUNBUFFERED: "1"
+          TZ: Asia/Shanghai
+      - name: 保存回测结果
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet && exit 0
+          git commit -m "backtest: $(TZ=Asia/Shanghai date +%F)"
+          git pull --rebase && git push

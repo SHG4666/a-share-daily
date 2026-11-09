@@ -157,8 +157,12 @@ def _hist_sina(code: str, start: str, end: str) -> pd.DataFrame:
     return df.rename(columns={"volume": "vol"})
 
 
-def get_hist(code: str, days: int = 420) -> pd.DataFrame:
+HIST_DAYS = 420  # 拉取多少个自然日的历史；夜间回测会调大
+
+
+def get_hist(code: str, days: int | None = None) -> pd.DataFrame:
     """前复权日线，列：date close high low vol"""
+    days = days or HIST_DAYS
     end = today_cn()
     start, end_s = (end - dt.timedelta(days=days)).strftime("%Y%m%d"), end.strftime("%Y%m%d")
     df = None

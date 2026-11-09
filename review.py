@@ -46,10 +46,15 @@ def adjustment(post: dict, res: dict, prev: dict) -> str:
     for n in order:
         s, before = slots.get(n, 0), prev.get(n)
         change = f"{before}→{s}" if before is not None and before != s else f"{s}"
-        ev = (f"近期日均超额 {pct_s(post[n]['raw'], 2)}（有效样本 {post[n]['n_eff']:.1f}）"
-              if post[n]["n"] else "暂无回测数据")
+        parts = []
+        if post[n].get("bt"):
+            b = post[n]["bt"]
+            parts.append(f"回测日均超额 {pct_s(b['ex'], 2)}（t={b['t']:.1f}）")
+        parts.append(f"实盘日均超额 {pct_s(post[n]['raw'], 2)}（有效样本 {post[n]['n_eff']:.1f}）"
+                     if post[n]["n"] else "实盘暂无数据")
+        ev = "｜".join(parts)
         seg.append(f"{tag(n)}{n} 名额 **{change}**｜胜出概率 {p.get(n, 0):.0%}｜{ev}")
-    head = "按各策略近期真实表现做贝叶斯分配：表现好的多给名额，数据少的保留探索机会"
+    head = "以夜间回测为起点、叠加近期实盘表现做贝叶斯分配：表现好的多给名额，数据少的保留探索机会"
     if res.get("cut"):
         head += "\n⚠️ 近期所有策略都跑输沪深300，今日减少推荐数量"
     return head + "\n" + "\n".join(seg)

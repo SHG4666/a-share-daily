@@ -183,7 +183,12 @@ def main():
 
     # 4) 根据近期表现分配名额
     names = [s.name for s in strategies.ALL]
-    post = alloc.posteriors(rec, names, tdays, day)
+    try:
+        import backtest
+        bt = backtest.load_prior()
+    except Exception as e:  # noqa: BLE001
+        print("读取回测结果失败:", e); bt = {}
+    post = alloc.posteriors(rec, names, tdays, day, bt)
     total = config.TOTAL_SLOTS if regime["strong"] else config.TOTAL_SLOTS_WEAK
     avail = {n: len(cand[n]) for n in names}
     res = alloc.allocate(post, avail, total, seed=int(day.strftime("%Y%m%d")))

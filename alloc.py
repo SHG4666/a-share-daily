@@ -3,6 +3,7 @@
 
 1. 每只历史推荐的“奖励” = 推荐后每天的平均超额收益
      有 3 日数据用 (3日收益 − 沪深300 3日收益) / 3，只有 1 日数据用次日超额收益
+   先验：如果有夜间回测结果，以回测的日均超额（打折后）作为起点
 2. 时间衰减：越近的推荐权重越大，半衰期 HALF_LIFE 个交易日（市场风格会变）
 3. 每个策略的期望收益看作正态分布：
      均值 = 加权平均奖励向 0 收缩（先验：没有证据时认为策略不赚不亏）
@@ -31,7 +32,10 @@ def rewards(rec: pd.DataFrame) -> pd.DataFrame:
     return ev
 
 
-def posteriors(rec: pd.DataFrame, names: list[str], tdays: list[dt.date], day: dt.date) -> dict:
+def posteriors(rec: pd.DataFrame, names: list[str], tdays: list[dt.date], day: dt.date,
+               bt: dict | None = None) -> dict:
+    """bt：夜间回测结果 {策略: {"ex": 日均超额, ...}}，作为先验均值；没有时先验为 0"""
+    bt = bt or {}
     ev = rewards(rec)
     idx = {d.isoformat(): i for i, d in enumerate(tdays)}
     today_i = idx.get(day.isoformat(), len(tdays))
@@ -48,8 +52,13 @@ def posteriors(rec: pd.DataFrame, names: list[str], tdays: list[dt.date], day: d
             sigma = max(sigma, 0.008)
         else:
             n_eff, mean_raw, sigma = 0.0, 0.0, config.PRIOR_SIGMA
-        k = n_eff + config.PRIOR_N
-        out[n] = dict(n=len(x), n_eff=n_eff, raw=mean_raw, mean=mean_raw * n_eff / k, sd=sigma / np.sqrt(k))
+        if n in bt and pd.notna(bt[n]["ex"]):
+            mu0, n0 = config.BT_PRIOR_SHRINK * float(bt[n]["ex"]), config.BT_PRIOR_N
+        else:
+            mu0, n0 = 0.0, config.PRIOR_N
+        k = n_eff + n0
+        out[n] = dict(n=len(x), n_eff=n_eff, raw=mean_raw, mean=(mean_raw * n_eff + mu0 * n0) / k,
+                      sd=sigma / np.sqrt(k), bt=bt.get(n))
     return out
 
 
