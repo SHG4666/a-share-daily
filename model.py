@@ -54,7 +54,7 @@ def neutral_z(s: pd.Series, groups: pd.Series | None = None, min_group: int = 5)
 
 
 # ---------------------------------------------------------------- 行业补全
-NAME_INDUSTRY = [("银行", "银行"), ("证券", "证券"), ("保险", "保险"), ("人寿", "保险")]
+NAME_INDUSTRY = [("银行|商行", "银行"), ("证券", "证券"), ("保险", "保险"), ("人寿", "保险")]
 
 
 def fill_industry(ind: pd.Series, names: pd.Series) -> pd.Series:
