@@ -102,6 +102,9 @@ def main():
         print(f"{today} 非交易日，跳过"); return
     day = max(t for t in tdays if t <= today)
     print("复盘日期", day)
+    sent_flag = data.DATA_DIR / "last_sent.txt"
+    if os.getenv("FORCE_RUN") != "1" and sent_flag.exists() and sent_flag.read_text().strip() == day.isoformat():
+        print(f"{day} 已推送过，跳过（多个定时触发的兜底去重）"); return
 
     spot = data.get_spot()
     print("全市场", len(spot), "只")
@@ -154,6 +157,8 @@ def main():
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)
+    data.DATA_DIR.mkdir(exist_ok=True)
+    sent_flag.write_text(day.isoformat())
 
 
 if __name__ == "__main__":
