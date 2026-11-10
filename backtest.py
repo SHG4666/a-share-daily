@@ -181,11 +181,14 @@ def load_prior() -> dict:
 def main():
     t0 = time.time()
     dry = os.getenv("DRY_RUN") == "1"
-    today = data.today_cn()
     tdays = data.trade_days()
-    if os.getenv("FORCE_RUN") != "1" and today not in tdays:
-        print(f"{today} 非交易日，跳过"); return
-    day = max(t for t in tdays if t <= today)
+    day, why = data.target_day(tdays)
+    if day is None:
+        print(f"跳过：{why}"); return
+    flag = data.DATA_DIR / "last_backtest.txt"
+    if os.getenv("FORCE_RUN") != "1" and flag.exists() and flag.read_text().strip() == day.isoformat():
+        print(f"{day} 已回测过，跳过"); return
+    print("回测基准日", day, f"（{why}）")
 
     data.HIST_DAYS = 560  # 回放最早一天也要有约 250 个交易日的历史（底部启动需要一年数据）
     spot = data.get_spot()
@@ -220,6 +223,7 @@ def main():
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)
+    flag.write_text(day.isoformat())
 
 
 if __name__ == "__main__":

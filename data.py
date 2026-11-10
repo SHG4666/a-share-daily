@@ -60,6 +60,25 @@ def today_cn() -> dt.date:
     return dt.datetime.now(TZ_CN).date()
 
 
+def target_day(tdays: list[dt.date], now: dt.datetime | None = None) -> tuple[dt.date | None, str]:
+    """根据当前北京时间决定复盘哪一个交易日。
+
+    GitHub 定时任务经常延迟几个小时，甚至拖到第二天凌晨才触发，所以不能简单地用“今天”：
+      - 交易日 15:30 之后：复盘今天
+      - 交易日 9:15–15:30（盘中）：行情不完整，不运行
+      - 其他时间（凌晨、早盘前、周末）：复盘上一个交易日（此时行情快照正是它的收盘数据）
+    """
+    now = now or dt.datetime.now(TZ_CN)
+    today, hm = now.date(), now.hour * 100 + now.minute
+    if today in tdays:
+        if hm >= 1530:
+            return today, "收盘后"
+        if hm >= 915:
+            return None, "盘中，行情不完整"
+    prev = [t for t in tdays if t < today]
+    return (prev[-1] if prev else None), "复盘上一交易日"
+
+
 def num(s):
     return pd.to_numeric(s, errors="coerce")
 

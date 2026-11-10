@@ -126,12 +126,11 @@ def send_feishu(payload: dict):
 
 def main():
     dry = os.getenv("DRY_RUN") == "1"
-    today = data.today_cn()
     tdays = data.trade_days()
-    if os.getenv("FORCE_RUN") != "1" and today not in tdays:
-        print(f"{today} 非交易日，跳过"); return
-    day = max(t for t in tdays if t <= today)
-    print("复盘日期", day)
+    day, why = data.target_day(tdays)
+    if day is None:
+        print(f"跳过：{why}"); return
+    print("复盘日期", day, f"（{why}）")
     sent_flag = data.DATA_DIR / "last_sent.txt"
     if os.getenv("FORCE_RUN") != "1" and sent_flag.exists() and sent_flag.read_text().strip() == day.isoformat():
         print(f"{day} 已推送过，跳过（多个定时触发的兜底去重）"); return
