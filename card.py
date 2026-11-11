@@ -35,7 +35,7 @@ HR = {"tag": "hr"}
 
 def build(day: dt.date, spot, regime, inds, review_txt, adjust_txt, picks: pd.DataFrame,
           pool_lines: list[str], board_txt, comment, details: dict) -> dict:
-    from strategies import tag
+    from variants import tag
     up, down = int((spot["涨跌幅"] > 0).sum()), int((spot["涨跌幅"] < 0).sum())
     els = [md(f"**市场概况**　上涨 <font color='red'>{up}</font> / 下跌 <font color='green'>{down}</font>"
               f"　成交额 **{spot['成交额'].sum() / 1e12:.2f} 万亿**\n"
@@ -69,10 +69,11 @@ def build(day: dt.date, spot, regime, inds, review_txt, adjust_txt, picks: pd.Da
     if pool_lines:
         els += [HR, md(f"**📌 推荐跟踪池**（最近 {len(pool_lines)} 只，按推荐后累计涨幅排序）\n" + "\n".join(pool_lines))]
     if board_txt:
-        els += [HR, md("**📈 策略战绩**（全部历史推荐）\n" + board_txt)]
+        els += [HR, md("**📈 策略实盘战绩**（全部历史推荐，以推荐后 5 日涨幅评判）\n" + board_txt)]
 
     els.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
-               "🔥强势延续 ↩️趋势回踩 🚀底部启动 🛡️稳健多因子。每天按各策略近期真实收益自动调整名额。"
+               "策略库：🔥强势延续 ↩️趋势回踩 🚀底部启动 🛡️稳健多因子 💥放量突破 🪃超跌反弹 🐢低波稳涨（共17个参数版本）。"
+               "每晚全市场回测评选上场策略，实盘表现差的立即下线替换。"
                "点击股票名查看雪球走势。仅供研究参考，不构成投资建议。"}]})
     return {"msg_type": "interactive", "card": {
         "config": {"wide_screen_mode": True},

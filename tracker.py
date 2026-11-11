@@ -77,16 +77,18 @@ def evaluate(df: pd.DataFrame, tdays: list[dt.date], day: dt.date, hist_fn,
 
 
 def stats_by_strategy(df: pd.DataFrame) -> pd.DataFrame:
+    """按策略统计实盘表现：以推荐后 5 日涨幅为主"""
     ev = df.dropna(subset=["r1"])
     if ev.empty:
         return pd.DataFrame()
     rows = []
     for s, x in ev.groupby("strategy"):
-        x3 = x.dropna(subset=["r3"])
-        x5 = x.dropna(subset=["up5"])
+        x5 = x.dropna(subset=["r5"])
         rows.append(dict(
-            strategy=s, n=len(x), win1=(x["r1"] > 0).mean(), avg1=x["r1"].mean(),
-            n3=len(x3), ex3=(x3["r3"] - x3["b3"].fillna(0)).mean() if len(x3) else np.nan,
+            strategy=s, n=len(x), avg1=x["r1"].mean(), n5=len(x5),
+            mean5=x5["r5"].mean() if len(x5) else np.nan,
+            win5=(x5["r5"] > 0).mean() if len(x5) else np.nan,
+            big5=(x5["r5"] >= 0.05).mean() if len(x5) else np.nan,
             up5=x5["up5"].mean() if len(x5) else np.nan,
         ))
     return pd.DataFrame(rows)

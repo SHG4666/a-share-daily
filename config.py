@@ -10,58 +10,19 @@ MIN_HISTORY_DAYS = 200         # 上市不足约 200 个交易日的次新股不
 # ep = 1/PE（盈利收益率）  bp = 1/PB（账面市值比）
 # roe = PB/PE（推算的 ROE，衡量盈利质量）  low_turn = -ln(换手率)（低换手溢价）
 STAGE1_WEIGHTS = {"ep": 0.25, "bp": 0.15, "roe": 0.40, "low_turn": 0.20}
-STAGE1_KEEP = 300              # 基本面排名前 N 进入第二阶段
 
-# ================= 第二阶段：时间序列统计 =================
-TREND_WINDOW = 60              # 趋势回归窗口（交易日）
-MIN_TREND_R2 = 0.40            # 趋势拟合优度下限
-STAGE2_WEIGHTS = {
-    "trend": 0.35,             # 趋势强度 = 年化斜率 × R²
-    "fundamental": 0.25,       # 第一阶段得分
-    "low_vol": 0.20,           # 低波动
-    "reversal": 0.10,          # 近 5 日短期反转（不追短期急涨）
-    "drawdown": 0.10,          # 60 日最大回撤小
-}
-
-# ================= 进攻策略：底部启动 =================
-BOTTOM_MIN_PCT = 1.0               # 粗筛：今日涨幅 ≥ 1%
-BOTTOM_MIN_TURNOVER = 1.0          # 粗筛：换手率 ≥ 1%
-BOTTOM_CANDIDATES = 0              # 粗筛后保留数量，0 = 不限（全市场扫描）
-BOTTOM_MIN_DECLINE = 0.30          # 一年高点到近期低点至少跌 30%
-BOTTOM_MIN_DOWN_DAYS = 40          # 下跌持续至少 40 个交易日
-BOTTOM_REBOUND_RANGE = (0.05, 0.25)  # 距底部反弹幅度区间（超过 25% 不算刚启动）
-BOTTOM_MAX_POSITION = 0.45         # 一年价格区间分位上限
-BOTTOM_MIN_VOL_RATIO = 1.3         # 5 日均量 / 60 日均量
-BOTTOM_WEIGHTS = {
-    "vol_surge": 0.25,             # 放量强度
-    "launch": 0.25,                # 启动质量：10 日回归斜率 × R²
-    "depth": 0.15,                 # 前期跌幅深度
-    "base": 0.15,                  # 底部收敛：筑底期波动 / 长期波动
-    "low_pos": 0.10,               # 位置越低越好
-    "early": 0.10,                 # 反弹越早越好
-}
-
-# ================= 风控 =================
-ATR_MULT = 2.0                 # 参考止损 = 收盘价 − ATR_MULT × ATR(14)
-
-# ================= 进攻策略：强势延续（押注连续上涨） =================
-MOM_CANDIDATES = 0                 # 粗筛后保留数量，0 = 不限（全市场扫描）
-MOM_TURNOVER_RANGE = (1.5, 20.0)   # 换手率区间
-MOM_R20_RANGE = (0.08, 0.45)       # 20 日涨幅区间：涨了，但还没涨疯
-MOM_MIN_R2 = 0.60                  # 20 日对数价格回归 R² 下限（涨得稳）
-MOM_NEAR_HIGH = 0.95               # 收盘价 ≥ 60 日最高收盘价的 95%
-MOM_MAX_BIAS20 = 0.15              # 偏离 20 日线上限
-MOM_MAX_R5 = 0.18                  # 近 5 日涨幅上限，过滤短期急拉
-MOM_VOL_TREND_RANGE = (0.9, 2.5)   # 5 日均量 / 20 日均量：温和放量，不要天量
-MOM_WEIGHTS = {"trend": 0.35, "up_days": 0.20, "not_extended": 0.20, "volume": 0.15, "near_high": 0.10}
-
-# ================= 进攻策略：趋势回踩 =================
-PB_CANDIDATES = 0                  # 0 = 不限（全市场扫描）
-PB_PCT_RANGE = (-1.0, 4.0)         # 今日涨跌幅区间（企稳，非大涨）
-PB_MIN_R2 = 0.50                   # 60 日趋势 R² 下限
-PB_PULL_RANGE = (-0.15, -0.04)     # 距 20 日最高收盘价回撤区间
-PB_MAX_VOL_RATIO = 0.90            # 回调期缩量：5 日均量 / 20 日均量上限
-PB_WEIGHTS = {"trend": 0.35, "shrink": 0.25, "support": 0.20, "strength": 0.20}
+# ================= 策略评判与上场名单（roster.py，各策略规则和参数版本在 variants.py） =================
+EVAL_HORIZON = 5               # 以推荐后 N 个交易日的涨幅评判策略好坏
+ROSTER_SIZE = 4                # 每天上场的策略数
+ROSTER_MAX_PER_FAMILY = 2      # 同一类策略最多上场几个参数版本
+ROSTER_MIN_DAYS = 30           # 回测中至少有多少个交易日选出了股票，才有资格上场
+ROSTER_MIN_PICKS = 100         # 回测中至少推荐过多少只
+ROSTER_MIN_T = 1.0             # 5 日收益 t 值下限（|t|≥2 显著；这里放宽到 1，配合前后半段检验）
+SHRINK_N = 100                 # 回测均值按 n/(n+SHRINK_N) 收缩，样本越少越打折
+KILL_N = 10                    # 实盘熔断：看最近 N 只已满 5 日的推荐
+KILL_MIN_N = 6                 # 至少有这么多只才判断
+KILL_R5 = -0.03                # 平均 5 日涨幅低于此值立即下线
+COOLDOWN_DAYS = 10             # 下线后冷却多少个交易日才可能重新上场
 
 # ================= 名额分配与复盘 =================
 CAND_PER_STRATEGY = 12         # 每个策略最多提供的候选数
@@ -70,9 +31,10 @@ TOTAL_SLOTS_WEAK = 10          # 弱势市场（沪深300 在 60 日线下）
 MAX_PER_INDUSTRY = 3           # 最终推荐中同一行业最多几只
 RECENT_EXCLUDE_DAYS = 3        # 最近几个交易日推荐过的不再重复推荐（在跟踪池里继续看）
 TRACK_DAYS = 10                # 跟踪池保留最近几个交易日的推荐
+MAX_STOP_LOSS = 0.10           # 止损参考价最多低于现价 10%
 HALF_LIFE = 7                  # 策略表现的时间衰减半衰期（交易日）
-PRIOR_N = 2                    # 先验样本数：数据少时向“不赚不亏”收缩的力度
-PRIOR_SIGMA = 0.02             # 先验日超额收益标准差
+PRIOR_N = 3                    # 先验样本数：数据少时向“不赚不亏”收缩的力度
+PRIOR_SIGMA = 0.06             # 先验：单只推荐 5 日涨幅的标准差
 
 # ================= 夜间回测 =================
 BT_DAYS = 120                  # 回放最近多少个交易日（约半年，覆盖不同市场阶段）

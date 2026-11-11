@@ -6,7 +6,17 @@ import pandas as pd
 
 import config
 from card import link, pct_s
-from strategies import consec_up, tag
+from variants import tag
+
+
+def consec_up(c: np.ndarray) -> int:
+    n = 0
+    for i in range(len(c) - 1, 0, -1):
+        if c[i] > c[i - 1]:
+            n += 1
+        else:
+            break
+    return n
 
 
 def index_ret_on(index_df: pd.DataFrame | None, day: dt.date) -> float | None:
@@ -39,25 +49,31 @@ def yesterday(rec: pd.DataFrame, prev_day: dt.date | None, spot_idx: pd.DataFram
     return "\n".join(lines)
 
 
-def adjustment(post: dict, res: dict, prev: dict) -> str:
+def adjustment(post: dict, res: dict, prev: dict, roster: dict, kills: list[dict]) -> str:
     slots, p = res["slots"], res["p_best"]
-    order = sorted(post, key=lambda n: -p.get(n, 0))
-    seg = []
-    for n in order:
+    lines = []
+    changes = list(kills) + [c for c in roster.get("changes", []) if roster.get("date") and c not in kills]
+    if changes:
+        lines.append("**策略替换**")
+        for c in changes:
+            icon = "🔺" if c["action"] == "上线" else "🔻"
+            lines.append(f"{icon} {c['action']} {tag(c['strategy'])}{c['strategy']}：{c['reason']}")
+    if roster.get("warn"):
+        lines.append(f"⚠️ {roster['warn']}")
+    lines.append(f"**今日上场 {len(post)} 个策略**（按回测 + 实盘的 5 日涨幅做贝叶斯分配，表现好的多给名额）")
+    for n in sorted(post, key=lambda n: -p.get(n, 0)):
         s, before = slots.get(n, 0), prev.get(n)
         change = f"{before}→{s}" if before is not None and before != s else f"{s}"
         parts = []
         if post[n].get("bt"):
             b = post[n]["bt"]
-            parts.append(f"回测日均超额 {pct_s(b['ex'], 2)}（t={b['t']:.1f}）")
-        parts.append(f"实盘日均超额 {pct_s(post[n]['raw'], 2)}（有效样本 {post[n]['n_eff']:.1f}）"
+            parts.append(f"回测5日均 {pct_s(b['mean5'])}")
+        parts.append(f"实盘5日均 {pct_s(post[n]['raw'])}（有效样本 {post[n]['n_eff']:.1f}）"
                      if post[n]["n"] else "实盘暂无数据")
-        ev = "｜".join(parts)
-        seg.append(f"{tag(n)}{n} 名额 **{change}**｜胜出概率 {p.get(n, 0):.0%}｜{ev}")
-    head = "以夜间回测为起点、叠加近期实盘表现做贝叶斯分配：表现好的多给名额，数据少的保留探索机会"
+        lines.append(f"{tag(n)}{n} 名额 **{change}**｜胜出概率 {p.get(n, 0):.0%}｜" + "｜".join(parts))
     if res.get("cut"):
-        head += "\n⚠️ 近期所有策略都跑输沪深300，今日减少推荐数量"
-    return head + "\n" + "\n".join(seg)
+        lines.append("⚠️ 近期所有上场策略的 5 日涨幅都为负，今日少推 2 只")
+    return "\n".join(lines)
 
 
 def tracking_pool(rec: pd.DataFrame, tdays: list[dt.date], day: dt.date, spot_idx: pd.DataFrame,
@@ -94,11 +110,12 @@ def scoreboard(stats: pd.DataFrame) -> str | None:
     if stats is None or stats.empty:
         return None
     lines = []
-    for _, s in stats.sort_values("avg1", ascending=False).iterrows():
-        t = f"{tag(s['strategy'])}{s['strategy']}　{s['n']:.0f} 只｜次日胜率 {s['win1']:.0%}｜次日均值 {pct_s(s['avg1'])}"
-        if s["n3"] > 0 and not np.isnan(s["ex3"]):
-            t += f"｜3日超额 {pct_s(s['ex3'])}"
-        if not np.isnan(s["up5"]):
-            t += f"｜5日内平均上涨 {s['up5']:.1f} 天"
+    for _, s in stats.sort_values(["mean5", "avg1"], ascending=False, na_position="last").iterrows():
+        t = f"{tag(s['strategy'])}{s['strategy']}　{s['n']:.0f} 只"
+        if s["n5"] > 0:
+            t += (f"｜**5日平均 {pct_s(s['mean5'])}**｜5日上涨 {s['win5']:.0%}｜涨超5% {s['big5']:.0%}"
+                  f"｜5日内平均涨 {s['up5']:.1f} 天")
+        else:
+            t += f"｜还没满5日｜次日均值 {pct_s(s['avg1'])}"
         lines.append(t)
     return "\n".join(lines)

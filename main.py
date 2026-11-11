@@ -27,7 +27,8 @@ import config
 import data
 import model
 import review
-import strategies
+import roster as roster_mod
+import variants
 import tracker
 
 
@@ -151,36 +152,40 @@ def main():
     recent_codes = set(rec.loc[rec["date"].isin(past[-config.RECENT_EXCLUDE_DAYS:]), "code"])
     track_codes = rec.loc[rec["date"].isin(past[-15:]), "code"].tolist()
 
-    # 2) 各策略粗筛 → 合并后一次性并发拉取历史数据
-    ctx = {"ind_map": ind_map}
-    pre = {s.name: s.prefilter(univ, ctx) for s in strategies.ALL}
-    for n, df in pre.items():
-        print(f"{n} 粗筛 {len(df)} 只")
-    fetch_hists([c for df in pre.values() for c in df["代码"]] + track_codes)
+    # 2) 全市场历史数据（缓存 + 当天增量），计算当天截面指标
+    fetch_hists(univ["代码"].tolist() + track_codes)
     try:
         STORE.save()
     except Exception as e:  # noqa: BLE001
         print("历史缓存保存失败:", e)
-
     rec = tracker.evaluate(rec, tdays, day, hist, index_df)
+    U = variants.make_panel(univ, {c: STORE.get(c) for c in univ["代码"]}, {day})
+    U = variants.tradable(U[U["date"] == day]) if len(U) else U
+    print(f"当天截面：{len(U)} 只股票有完整指标")
 
-    # 3) 各策略精选（排除最近几天已推荐过的）
+    # 3) 上场策略：先做实盘熔断（近期表现太差的立即下线、补位），再各自选股
+    ros = roster_mod.load()
+    kills = roster_mod.apply_kill_switch(ros, rec, tdays, day)
+    for c in kills:
+        print("策略替换:", c)
+    names = [n for n in ros["active"] if n in variants.BY_NAME] or list(variants.DEFAULT_ROSTER)
+    print("今日上场策略:", names)
     cand = {}
-    for s in strategies.ALL:
+    for n in names:
         try:
-            df = s.select(pre[s.name], _HIST)
+            df = variants.run(variants.BY_NAME[n], U, config.CAND_PER_STRATEGY + len(recent_codes), with_text=True)
         except Exception as e:  # noqa: BLE001
             import traceback; traceback.print_exc()
-            print(f"策略 {s.name} 失败：{e}")
+            print(f"策略 {n} 失败：{e}")
             df = pd.DataFrame()
         if len(df):
-            df = df[~df["代码"].isin(recent_codes)].copy()
-            df["strategy"] = s.name
-        cand[s.name] = df
-        print(f"{s.name} 可用候选 {len(df)} 只")
+            df = df[~df["代码"].isin(recent_codes)].head(config.CAND_PER_STRATEGY).copy()
+            print(f"{n}：{int(df['pool'].iloc[0])} 只满足条件，可用候选 {len(df)} 只")
+        else:
+            print(f"{n}：0 只满足条件")
+        cand[n] = df
 
-    # 4) 根据近期表现分配名额
-    names = [s.name for s in strategies.ALL]
+    # 4) 根据近期 5 日涨幅表现分配名额
     try:
         import backtest
         bt = backtest.load_prior()
@@ -198,15 +203,20 @@ def main():
     prev_day = max((d for d in tdays if d < day), default=None)
     review_txt = review.yesterday(rec, prev_day, spot_idx, review.index_ret_on(index_df, day))
     alloc_hist = alloc.load()
-    adjust_txt = review.adjustment(post, res, alloc.previous_slots(alloc_hist, day))
+    recent_night = {d.isoformat() for d in (prev_day, day) if d}
+    ros_view = dict(ros) if ros.get("date") in recent_night else dict(ros, changes=[], warn=None)
+    adjust_txt = review.adjustment(post, res, alloc.previous_slots(alloc_hist, day), ros_view, kills)
     pool_lines = review.tracking_pool(rec, tdays, day, spot_idx, _HIST)
     board_txt = review.scoreboard(tracker.stats_by_strategy(rec))
-    details = {r["代码"]: strategies.safe_detail(r["strategy"], r) for _, r in picks.iterrows()}
+    details = {r["代码"]: r.get("detail", "") for _, r in picks.iterrows()}
 
     rec = tracker.record(rec, day, picks)
     if not dry:
         tracker.save(rec)
         alloc.save(alloc_hist, day, post, res)
+        if kills:
+            roster_mod.save(ros)
+            roster_mod.log_changes(day, kills)
 
     inds = data.get_top_industries(config.TOP_INDUSTRY_N)
     ind_txt = "、".join(inds["板块名称"]) if inds is not None else "未知"

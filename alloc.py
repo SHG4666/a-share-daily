@@ -1,12 +1,12 @@
 """
-名额分配：根据各策略近期的真实表现，用贝叶斯方法分配每天的推荐名额
+名额分配：根据各策略的真实涨幅表现，用贝叶斯方法分配每天的推荐名额
 
-1. 每只历史推荐的“奖励” = 推荐后每天的平均超额收益
-     有 3 日数据用 (3日收益 − 沪深300 3日收益) / 3，只有 1 日数据用次日超额收益
-   先验：如果有夜间回测结果，以回测的日均超额（打折后）作为起点
+1. 每只历史推荐的“奖励” = 推荐后 5 个交易日的涨幅
+     还没满 5 天的推荐也算部分证据：有 3 日数据按 3 日涨幅 × 5/3 折算、权重 0.5；只有次日数据按 × 5 折算、权重 0.25
+   先验：以夜间回测的 5 日平均涨幅（打五折）作为起点
 2. 时间衰减：越近的推荐权重越大，半衰期 HALF_LIFE 个交易日（市场风格会变）
-3. 每个策略的期望收益看作正态分布：
-     均值 = 加权平均奖励向 0 收缩（先验：没有证据时认为策略不赚不亏）
+3. 每个策略的期望 5 日涨幅看作正态分布：
+     均值 = 实盘加权平均与回测先验的加权组合
      标准差 = σ / √(有效样本数 + 先验样本数)（样本越少越不确定）
 4. 蒙特卡洛模拟 5000 次，统计每个策略“是当前最好策略”的概率 P(best)
 5. 名额按 P(best) 比例分配：表现好的多给；数据少、不确定的策略仍有机会（自动探索）
@@ -26,15 +26,14 @@ def rewards(rec: pd.DataFrame) -> pd.DataFrame:
     ev = rec.dropna(subset=["r1"]).copy()
     if ev.empty:
         return ev
-    for k in (1, 3):
-        ev[f"x{k}"] = (ev[f"r{k}"] - ev[f"b{k}"].fillna(0)) / k
-    ev["reward"] = ev["x3"].where(ev["r3"].notna(), ev["x1"])
+    ev["reward"] = np.where(ev["r5"].notna(), ev["r5"], np.where(ev["r3"].notna(), ev["r3"] * 5 / 3, ev["r1"] * 5))
+    ev["wmult"] = np.where(ev["r5"].notna(), 1.0, np.where(ev["r3"].notna(), 0.5, 0.25))
     return ev
 
 
 def posteriors(rec: pd.DataFrame, names: list[str], tdays: list[dt.date], day: dt.date,
                bt: dict | None = None) -> dict:
-    """bt：夜间回测结果 {策略: {"ex": 日均超额, ...}}，作为先验均值；没有时先验为 0"""
+    """bt：夜间回测结果 {策略: {"mean5": 5日平均涨幅, ...}}，作为先验均值；没有时先验为 0"""
     bt = bt or {}
     ev = rewards(rec)
     idx = {d.isoformat(): i for i, d in enumerate(tdays)}
@@ -44,16 +43,16 @@ def posteriors(rec: pd.DataFrame, names: list[str], tdays: list[dt.date], day: d
         x = ev[ev["strategy"] == n] if len(ev) else ev
         if len(x):
             age = np.array([today_i - idx.get(d, today_i) for d in x["date"]], float)
-            w = 0.5 ** (age / config.HALF_LIFE)
+            w = 0.5 ** (age / config.HALF_LIFE) * x["wmult"].to_numpy(float)
             r = x["reward"].to_numpy(float)
             n_eff = float(w.sum())
             mean_raw = float((w * r).sum() / n_eff)
             sigma = float(np.sqrt((w * (r - mean_raw) ** 2).sum() / n_eff)) if len(x) >= 3 else config.PRIOR_SIGMA
-            sigma = max(sigma, 0.008)
+            sigma = max(sigma, 0.02)
         else:
             n_eff, mean_raw, sigma = 0.0, 0.0, config.PRIOR_SIGMA
-        if n in bt and pd.notna(bt[n]["ex"]):
-            mu0, n0 = config.BT_PRIOR_SHRINK * float(bt[n]["ex"]), config.BT_PRIOR_N
+        if n in bt and pd.notna(bt[n].get("mean5")):
+            mu0, n0 = config.BT_PRIOR_SHRINK * float(bt[n]["mean5"]), config.BT_PRIOR_N
         else:
             mu0, n0 = 0.0, config.PRIOR_N
         k = n_eff + n0
