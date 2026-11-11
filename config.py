@@ -10,7 +10,7 @@ MIN_HISTORY_DAYS = 200         # 上市不足约 200 个交易日的次新股不
 # ep = 1/PE（盈利收益率）  bp = 1/PB（账面市值比）
 # roe = PB/PE（推算的 ROE，衡量盈利质量）  low_turn = -ln(换手率)（低换手溢价）
 STAGE1_WEIGHTS = {"ep": 0.25, "bp": 0.15, "roe": 0.40, "low_turn": 0.20}
-STAGE1_KEEP = 150              # 进入第二阶段的数量
+STAGE1_KEEP = 300              # 基本面排名前 N 进入第二阶段
 
 # ================= 第二阶段：时间序列统计 =================
 TREND_WINDOW = 60              # 趋势回归窗口（交易日）
@@ -26,7 +26,7 @@ STAGE2_WEIGHTS = {
 # ================= 进攻策略：底部启动 =================
 BOTTOM_MIN_PCT = 1.0               # 粗筛：今日涨幅 ≥ 1%
 BOTTOM_MIN_TURNOVER = 1.0          # 粗筛：换手率 ≥ 1%
-BOTTOM_CANDIDATES = 200            # 粗筛后拉历史数据的数量
+BOTTOM_CANDIDATES = 0              # 粗筛后保留数量，0 = 不限（全市场扫描）
 BOTTOM_MIN_DECLINE = 0.30          # 一年高点到近期低点至少跌 30%
 BOTTOM_MIN_DOWN_DAYS = 40          # 下跌持续至少 40 个交易日
 BOTTOM_REBOUND_RANGE = (0.05, 0.25)  # 距底部反弹幅度区间（超过 25% 不算刚启动）
@@ -45,7 +45,7 @@ BOTTOM_WEIGHTS = {
 ATR_MULT = 2.0                 # 参考止损 = 收盘价 − ATR_MULT × ATR(14)
 
 # ================= 进攻策略：强势延续（押注连续上涨） =================
-MOM_CANDIDATES = 250               # 粗筛后拉历史数据的数量（今日上涨、未涨停、按成交额）
+MOM_CANDIDATES = 0                 # 粗筛后保留数量，0 = 不限（全市场扫描）
 MOM_TURNOVER_RANGE = (1.5, 20.0)   # 换手率区间
 MOM_R20_RANGE = (0.08, 0.45)       # 20 日涨幅区间：涨了，但还没涨疯
 MOM_MIN_R2 = 0.60                  # 20 日对数价格回归 R² 下限（涨得稳）
@@ -56,7 +56,7 @@ MOM_VOL_TREND_RANGE = (0.9, 2.5)   # 5 日均量 / 20 日均量：温和放量�
 MOM_WEIGHTS = {"trend": 0.35, "up_days": 0.20, "not_extended": 0.20, "volume": 0.15, "near_high": 0.10}
 
 # ================= 进攻策略：趋势回踩 =================
-PB_CANDIDATES = 250
+PB_CANDIDATES = 0                  # 0 = 不限（全市场扫描）
 PB_PCT_RANGE = (-1.0, 4.0)         # 今日涨跌幅区间（企稳，非大涨）
 PB_MIN_R2 = 0.50                   # 60 日趋势 R² 下限
 PB_PULL_RANGE = (-0.15, -0.04)     # 距 20 日最高收盘价回撤区间
@@ -77,9 +77,11 @@ PRIOR_SIGMA = 0.02             # 先验日超额收益标准差
 # ================= 夜间回测 =================
 BT_DAYS = 60                   # 回放最近多少个交易日
 BT_TOP_K = 5                   # 每个策略每天取前几只
-BT_UNIVERSE = 800              # 回测股票池：当前成交额前 N 只
+BT_FETCH_BUDGET = 40 * 60      # 夜间回测补拉历史数据的时间预算（秒），超出的下次继续
 BT_PRIOR_SHRINK = 0.5          # 回测结果用作先验时打的折扣（回测通常比实盘乐观）
 BT_PRIOR_N = 4                 # 回测先验相当于多少个实盘样本
+
+DAILY_FETCH_BUDGET = 25 * 60   # 每日推送补拉历史数据的时间预算（秒）
 
 # ================= 其他 =================
 TOP_INDUSTRY_N = 5

@@ -93,7 +93,8 @@ def trade_days() -> list[dt.date]:
     return sorted(to_date(ak.tool_trade_date_hist_sina()["trade_date"]))
 
 
-SPOT_COLS = ["代码", "名称", "最新价", "涨跌幅", "成交额", "换手率", "市盈率-动态", "市净率", "总市值"]
+SPOT_COLS = ["代码", "名称", "最新价", "涨跌幅", "成交额", "换手率", "市盈率-动态", "市净率", "总市值",
+             "昨收", "最高", "最低", "成交量"]
 
 
 def market_symbol(code: str) -> str:
@@ -131,7 +132,8 @@ def _spot_tencent() -> pd.DataFrame:
             if len(f) < 47:
                 continue
             rows.append({"代码": f[2], "名称": f[1], "最新价": f[3], "涨跌幅": f[32], "成交额": f[37],
-                         "换手率": f[38], "市盈率-动态": f[39], "市净率": f[46], "总市值": f[45]})
+                         "换手率": f[38], "市盈率-动态": f[39], "市净率": f[46], "总市值": f[45],
+                         "昨收": f[4], "最高": f[33], "最低": f[34], "成交量": f[36]})  # 成交量单位：手
             if f[2] == "600519":
                 print("腾讯样本(茅台):", {k: v for k, v in rows[-1].items()})
         time.sleep(0.1)
@@ -152,7 +154,7 @@ def get_spot() -> pd.DataFrame:
         try:
             df = fn()
             for c in SPOT_COLS[2:]:
-                df[c] = num(df[c])
+                df[c] = num(df[c]) if c in df.columns else float("nan")
             df["代码"] = df["代码"].astype(str).str.zfill(6)
             df.loc[df["最新价"] <= 0, "最新价"] = float("nan")  # 停牌
             print(f"行情来源：{name}，{len(df)} 只")
@@ -173,10 +175,12 @@ def _hist_em(code: str, start: str, end: str) -> pd.DataFrame:
 def _hist_sina(code: str, start: str, end: str) -> pd.DataFrame:
     import akshare as ak
     df = ak.stock_zh_a_daily(symbol=market_symbol(code), start_date=start, end_date=end, adjust="qfq")
-    return df.rename(columns={"volume": "vol"})
+    df = df.rename(columns={"volume": "vol"})
+    df["vol"] = pd.to_numeric(df["vol"], errors="coerce") / 100  # 新浪是股，统一成手（与东方财富、腾讯一致）
+    return df
 
 
-HIST_DAYS = 420  # 拉取多少个自然日的历史；夜间回测会调大
+HIST_DAYS = 600  # 拉取多少个自然日的历史（约 400 个交易日，够夜间回测回放 60 天 + 底部启动所需一年）
 
 
 def get_hist(code: str, days: int | None = None) -> pd.DataFrame:

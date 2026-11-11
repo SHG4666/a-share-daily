@@ -106,7 +106,7 @@ class Momentum:
         limit = np.where(univ["代码"].str.startswith(("688", "300", "301")), 20.0, 10.0)
         df = univ[(univ["涨跌幅"] > 0) & (univ["涨跌幅"] < limit - 2)
                   & univ["换手率"].between(*c.MOM_TURNOVER_RANGE)]
-        return df.sort_values("成交额", ascending=False).head(c.MOM_CANDIDATES)
+        return df.sort_values("成交额", ascending=False).head(c.MOM_CANDIDATES or len(df))
 
     @staticmethod
     def stats(h):
@@ -167,7 +167,7 @@ class Pullback:
     def prefilter(self, univ, ctx):
         c = config
         df = univ[univ["涨跌幅"].between(*c.PB_PCT_RANGE) & (univ["换手率"] >= 0.8)]
-        return df.sort_values("成交额", ascending=False).head(c.PB_CANDIDATES)
+        return df.sort_values("成交额", ascending=False).head(c.PB_CANDIDATES or len(df))
 
     @staticmethod
     def stats(h):

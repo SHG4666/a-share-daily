@@ -21,6 +21,7 @@ import pandas as pd
 import requests
 
 import alloc
+import histstore
 import card
 import config
 import data
@@ -30,33 +31,23 @@ import strategies
 import tracker
 
 
-_HIST: dict = {}
+STORE = histstore.Store()
+_HIST = STORE.h  # 代码 -> 历史日线（与缓存共用同一个字典）
+_CTX = {"day": None, "traded": None}
 
 
-def _fetch_one(code: str):
-    try:
-        time.sleep(0.2)
-        return data.get_hist(code)
-    except Exception as e:  # noqa: BLE001
-        print("历史数据获取失败", code, str(e)[:80])
-        return None
-
-
-def fetch_hists(codes: list[str]):
-    """并发拉取历史日线并缓存，同一只股票本次运行只拉一次"""
-    todo = [c for c in dict.fromkeys(codes) if c not in _HIST]
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        for c, h in zip(todo, ex.map(_fetch_one, todo)):
-            if h is not None:
-                _HIST[c] = h
-    print(f"历史数据：新拉取 {len(todo)} 只，用时 {time.time() - t0:.0f}s")
+def fetch_hists(codes: list[str], budget_sec: float | None = None):
+    """确保这些股票有截至复盘日的历史数据（优先用缓存，缺的在时间预算内补拉）"""
+    STORE.ensure(codes, _CTX["day"] or data.today_cn(), budget_sec or config.DAILY_FETCH_BUDGET,
+                 traded=_CTX["traded"])
 
 
 def hist(code: str):
-    if code not in _HIST:
-        _HIST[code] = data.get_hist(code)
-    return _HIST[code]
+    h = STORE.get(code)
+    if h is None:
+        h = data.get_hist(code)
+        STORE.h[code] = h
+    return h
 
 
 def merge(cand: dict, res: dict, names: list[str]) -> pd.DataFrame:
@@ -138,6 +129,10 @@ def main():
     spot = data.get_spot()
     spot_idx = spot.set_index("代码")
     print("全市场", len(spot), "只")
+    STORE.load()
+    STORE.append_snapshot(spot, day)
+    _CTX["day"] = day
+    _CTX["traded"] = set(spot.loc[spot["成交量"] > 0, "代码"]) if "成交量" in spot else None
     try:
         index_df = data.get_index("sh000300")
     except Exception as e:  # noqa: BLE001
@@ -162,6 +157,10 @@ def main():
     for n, df in pre.items():
         print(f"{n} 粗筛 {len(df)} 只")
     fetch_hists([c for df in pre.values() for c in df["代码"]] + track_codes)
+    try:
+        STORE.save()
+    except Exception as e:  # noqa: BLE001
+        print("历史缓存保存失败:", e)
 
     rec = tracker.evaluate(rec, tdays, day, hist, index_df)
 

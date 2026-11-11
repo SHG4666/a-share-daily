@@ -14,6 +14,11 @@ on:
         description: "只打印报告，不推送飞书、不写数据"
         type: boolean
         default: false
+      mode:
+        description: "full：回测并推送；build：只构建/补齐全市场历史缓存"
+        type: choice
+        options: [full, build]
+        default: full
 
 permissions:
   contents: write
@@ -25,7 +30,7 @@ concurrency:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +38,12 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: 恢复历史行情缓存
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}
+          restore-keys: hist-
       - run: python backtest.py
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
@@ -40,8 +51,15 @@ jobs:
           FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
           SPOT_SOURCE: tencent
+          BT_MODE: ${{ github.event.inputs.mode || 'full' }}
           PYTHONUNBUFFERED: "1"
           TZ: Asia/Shanghai
+      - name: 保存历史行情缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}-${{ github.run_attempt }}
       - name: 保存回测结果
         if: github.event.inputs.dry_run != 'true'
         run: |

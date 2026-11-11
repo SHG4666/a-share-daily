@@ -16,7 +16,7 @@
   3 日超额、5 日内上涨天数、连涨率（推荐后 5 天里至少 3 天上涨的比例）
 
 近似与偏差（会在报告里说明）：
-  - 股票池用今天的成交额前 BT_UNIVERSE 只（存在幸存者偏差）
+  - 股票池为全市场（剔除 ST/北交所/当前市值过小），每天按当天成交额过滤；按当前状态筛选有幸存者偏差
   - 回放中没有历史换手率，换手率条件按满足处理
   - 稳健多因子使用今天的 PE/PB（有前视偏差），结果仅作参考
 """
@@ -36,36 +36,43 @@ import config
 import data
 import model
 import strategies
-from main import _HIST, fetch_hists, send_feishu
+import main as daily
+from main import send_feishu
 
 PATH = data.DATA_DIR / "backtest.csv"
 BASELINES = ["随机基准", "追涨基准"]
+ERRORS: dict[str, str] = {}  # 回放中各策略的首个报错，打印出来便于排查
 
 
-def build_panel(codes: list[str]) -> dict[str, pd.DataFrame]:
-    fetch_hists(codes)
-    return {c: _HIST[c].reset_index(drop=True) for c in codes if c in _HIST and len(_HIST[c]) > 130}
+class Panel:
+    """回测用的历史面板：每只股票一份 DataFrame + 日期→行号索引"""
+
+    def __init__(self, hists: dict[str, pd.DataFrame], min_rows: int = 130):
+        self.h = {c: h.reset_index(drop=True) for c, h in hists.items() if h is not None and len(h) > min_rows}
+        self.pos = {c: {d: i for i, d in enumerate(h["date"])} for c, h in self.h.items()}
+        self.close = {c: h["close"].to_numpy(float) for c, h in self.h.items()}
+        self.vol = {c: h["vol"].to_numpy(float) for c, h in self.h.items()}
 
 
-def pseudo_univ(base: pd.DataFrame, hists: dict, t: dt.date) -> tuple[pd.DataFrame, dict]:
-    """用截至 t 的数据构造当天的“快照”和历史切片"""
+def pseudo_univ(base_rows: list[dict], panel: Panel, t: dt.date) -> tuple[pd.DataFrame, dict]:
+    """用截至 t 的数据构造当天的“快照”和历史切片；按当天成交额做流动性过滤"""
     rows, sliced = [], {}
-    for _, r in base.iterrows():
-        h = hists.get(r["代码"])
-        if h is None:
+    for r in base_rows:
+        code = r["代码"]
+        p = panel.pos.get(code, {}).get(t)
+        if p is None or p < 1:
             continue
-        pos = h.index[h["date"] == t]
-        if len(pos) == 0 or pos[0] < 1:
-            continue
-        p = int(pos[0])
-        hs = h.iloc[:p + 1]
-        c0, c1 = hs["close"].iloc[-2], hs["close"].iloc[-1]
+        c = panel.close[code]
+        c0, c1 = c[p - 1], c[p]
         pct = (c1 / c0 - 1) * 100
-        limit = 20.0 if r["代码"].startswith(("688", "300", "301")) else 10.0
+        limit = 20.0 if code.startswith(("688", "300", "301")) else 10.0
         if abs(pct) >= limit - 0.3:
             continue
-        rows.append({**r, "最新价": c1, "涨跌幅": pct, "成交额": c1 * hs["vol"].iloc[-1], "换手率": 3.0})
-        sliced[r["代码"]] = hs
+        amount = c1 * panel.vol[code][p] * 100  # 成交量单位是手
+        if amount < config.MIN_AMOUNT:
+            continue
+        rows.append({**r, "最新价": c1, "涨跌幅": pct, "成交额": amount, "换手率": 3.0})
+        sliced[code] = panel.h[code].iloc[:p + 1]
     return pd.DataFrame(rows), sliced
 
 
@@ -85,8 +92,8 @@ def fwd(h: pd.DataFrame, t: dt.date) -> dict | None:
     return out
 
 
-def run_day(t, base, hists, ind_map, rng) -> list[dict]:
-    univ, sliced = pseudo_univ(base, hists, t)
+def run_day(t, base_rows, panel, ind_map, rng) -> list[dict]:
+    univ, sliced = pseudo_univ(base_rows, panel, t)
     if len(univ) < 100:
         return []
     picks = {}
@@ -95,7 +102,8 @@ def run_day(t, base, hists, ind_map, rng) -> list[dict]:
             try:
                 df = s.select(s.prefilter(univ, {"ind_map": ind_map}), sliced)
                 picks[s.name] = df["代码"].head(config.BT_TOP_K).tolist() if len(df) else []
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                ERRORS[s.name] = ERRORS.get(s.name) or f"{type(e).__name__}: {e}"
                 picks[s.name] = []
     picks["随机基准"] = list(rng.choice(univ["代码"].to_numpy(), size=config.BT_TOP_K, replace=False))
     chase = univ[univ["涨跌幅"].between(5, 9)].sort_values("成交额", ascending=False)
@@ -104,7 +112,7 @@ def run_day(t, base, hists, ind_map, rng) -> list[dict]:
     out = []
     for name, codes in picks.items():
         for c in codes:
-            f = fwd(hists[c], t)
+            f = fwd(panel.h[c], t)
             if f:
                 out.append({"date": t.isoformat(), "strategy": name, "code": c, **f})
     return out
@@ -136,7 +144,7 @@ def summarize(trades: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("ex1", ascending=False)
 
 
-def report_card(day: dt.date, summ: pd.DataFrame, n_univ: int, n_days: int, secs: float) -> dict:
+def report_card(day: dt.date, summ: pd.DataFrame, coverage: str, n_days: int, secs: float) -> dict:
     tag = {**{s.name: strategies.tag(s.name) for s in strategies.ALL}, "随机基准": "🎲", "追涨基准": "📈"}
     lines = []
     for i, (_, r) in enumerate(summ.iterrows(), 1):
@@ -153,12 +161,12 @@ def report_card(day: dt.date, summ: pd.DataFrame, n_univ: int, n_days: int, secs
     concl = (f"跑赢随机基准的策略：{'、'.join(beat)}" if beat else "所有策略都没跑赢随机基准，近期市场不适合这些打法") + \
         "。明天的名额分配会以这份结果作为起点，再叠加实盘推荐的表现。"
     els = [
-        card.md(f"回放过去 **{n_days}** 个交易日，股票池 {n_univ} 只，每个策略每天取前 {config.BT_TOP_K} 只，"
-                f"按收盘价买入、持有 1/3/5 天计算真实收益。"),
+        card.md(f"回放过去 **{n_days}** 个交易日，{coverage}；每天再按当天成交额≥{config.MIN_AMOUNT / 1e8:.0f}亿过滤。"
+                f"每个策略每天取前 {config.BT_TOP_K} 只，按收盘价买入、持有 1/3/5 天计算真实收益。"),
         card.HR, card.md("\n\n".join(lines)), card.HR, card.md(f"**结论**　{concl}"),
         {"tag": "note", "elements": [{"tag": "plain_text", "content":
             "t 值 = 日均超额 ÷ 标准误，|t|≥2 大致说明不是运气。连涨率 = 推荐后 5 天里至少 3 天上涨的比例。"
-            "近似：股票池用当前成交额前列（幸存者偏差），无历史换手率；稳健多因子用当前 PE/PB，仅供参考。"
+            "近似：股票池按当前市值和上市状态筛选（有幸存者偏差），无历史换手率；稳健多因子用当前 PE/PB，仅供参考。"
             f"耗时 {secs / 60:.0f} 分钟。"}]},
     ]
     return {"msg_type": "interactive", "card": {
@@ -186,28 +194,41 @@ def main():
     if day is None:
         print(f"跳过：{why}"); return
     flag = data.DATA_DIR / "last_backtest.txt"
-    if os.getenv("FORCE_RUN") != "1" and flag.exists() and flag.read_text().strip() == day.isoformat():
+    if os.getenv("FORCE_RUN") != "1" and os.getenv("BT_MODE") != "build" and flag.exists() \
+            and flag.read_text().strip() == day.isoformat():
         print(f"{day} 已回测过，跳过"); return
     print("回测基准日", day, f"（{why}）")
 
-    data.HIST_DAYS = 560  # 回放最早一天也要有约 250 个交易日的历史（底部启动需要一年数据）
     spot = data.get_spot()
     index_df = data.get_index("sh000300")
     ind_map = data.get_industry_map(config.INDUSTRY_CACHE_DAYS)
-    base = model.universe(spot)
+    # 全市场：剔除 ST、北交所、市值过小（与实盘规则一致）；流动性按每个历史交易日的成交额单独过滤
+    base = spot[~spot["名称"].str.contains("ST|退", na=False) & ~spot["代码"].str.startswith(config.EXCLUDE_PREFIX)
+                & (spot["总市值"] >= config.MIN_MARKET_CAP)].copy()
     base["industry"] = model.fill_industry(base["代码"].map(ind_map), base["名称"])
-    base = base.sort_values("成交额", ascending=False).head(config.BT_UNIVERSE)
-    hists = build_panel(base["代码"].tolist())
-    base = base[base["代码"].isin(hists)]
-    print(f"回测股票池 {len(base)} 只，历史数据就绪，用时 {time.time() - t0:.0f}s")
+    store = daily.STORE.load()
+    store.append_snapshot(spot, day)
+    traded = set(spot.loc[spot["成交量"] > 0, "代码"]) if "成交量" in spot else None
+    left = store.ensure(base["代码"].tolist(), day, budget_sec=config.BT_FETCH_BUDGET, traded=traded)
+    store.save()
+    panel = Panel({c: store.get(c) for c in base["代码"]})
+    base = base[base["代码"].isin(panel.h)]
+    base_rows = base.drop(columns=[c for c in ["昨收", "最高", "最低", "成交量"] if c in base]).to_dict("records")
+    coverage = f"全市场 {len(spot)} 只，剔除 ST/北交所/市值<{config.MIN_MARKET_CAP / 1e8:.0f}亿 后 {len(base) + left} 只，" \
+               f"已有历史数据 {len(base)} 只" + (f"（还有 {left} 只下次补齐）" if left else "")
+    print(coverage, f"用时 {time.time() - t0:.0f}s")
+    if os.getenv("BT_MODE") == "build":
+        print("仅构建历史缓存，结束"); return
 
     dates = [d for d in tdays if d < day][-(config.BT_DAYS + 1):-1]
     rng = np.random.default_rng(int(day.strftime("%Y%m%d")))
     trades = []
     for i, t in enumerate(dates, 1):
-        trades += run_day(t, base, hists, ind_map, rng)
+        trades += run_day(t, base_rows, panel, ind_map, rng)
         if i % 10 == 0:
             print(f"回放进度 {i}/{len(dates)}，用时 {time.time() - t0:.0f}s")
+    for k, v in ERRORS.items():
+        print(f"⚠️ 策略 {k} 回放出错：{v}")
     trades = pd.DataFrame(trades)
     summ = summarize(trades, index_df)
     print(summ.to_string())
@@ -219,7 +240,7 @@ def main():
         data.DATA_DIR.mkdir(exist_ok=True)
         pd.concat([old, summ], ignore_index=True).to_csv(PATH, index=False)
 
-    payload = report_card(day, summ, len(base), len(dates), time.time() - t0)
+    payload = report_card(day, summ, coverage, len(dates), time.time() - t0)
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)

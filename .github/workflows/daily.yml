@@ -39,6 +39,12 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: 恢复历史行情缓存
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}
+          restore-keys: hist-
       - run: python main.py
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
@@ -49,6 +55,12 @@ jobs:
           SPOT_SOURCE: ${{ github.event.inputs.spot_source }}
           PYTHONUNBUFFERED: "1"
           TZ: Asia/Shanghai
+      - name: 保存历史行情缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}-${{ github.run_attempt }}
       - name: 保存追踪数据
         if: github.event.inputs.dry_run != 'true'
         run: |

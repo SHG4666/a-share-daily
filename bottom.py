@@ -38,7 +38,7 @@ LABELS = {
 def prefilter(univ: pd.DataFrame) -> pd.DataFrame:
     """用当日快照粗筛：今天在涨、有换手，再按成交额取前 N 只拉历史数据"""
     df = univ[(univ["涨跌幅"] >= config.BOTTOM_MIN_PCT) & (univ["换手率"] >= config.BOTTOM_MIN_TURNOVER)]
-    return df.sort_values("成交额", ascending=False).head(config.BOTTOM_CANDIDATES)
+    return df.sort_values("成交额", ascending=False).head(config.BOTTOM_CANDIDATES or len(df))
 
 
 def bottom_stats(h: pd.DataFrame) -> dict | None:
