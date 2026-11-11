@@ -64,10 +64,10 @@ PB_MAX_VOL_RATIO = 0.90            # 回调期缩量：5 日均量 / 20 日均�
 PB_WEIGHTS = {"trend": 0.35, "shrink": 0.25, "support": 0.20, "strength": 0.20}
 
 # ================= 名额分配与复盘 =================
-CAND_PER_STRATEGY = 8          # 每个策略最多提供的候选数
-TOTAL_SLOTS = 6                # 每日推荐总数（强势市场）
-TOTAL_SLOTS_WEAK = 4           # 弱势市场（沪深300 在 60 日线下）
-MAX_PER_INDUSTRY = 2           # 最终推荐中同一行业最多几只
+CAND_PER_STRATEGY = 12         # 每个策略最多提供的候选数
+TOTAL_SLOTS = 10               # 每日推荐总数（强势市场）
+TOTAL_SLOTS_WEAK = 10          # 弱势市场（沪深300 在 60 日线下）
+MAX_PER_INDUSTRY = 3           # 最终推荐中同一行业最多几只
 RECENT_EXCLUDE_DAYS = 3        # 最近几个交易日推荐过的不再重复推荐（在跟踪池里继续看）
 TRACK_DAYS = 10                # 跟踪池保留最近几个交易日的推荐
 HALF_LIFE = 7                  # 策略表现的时间衰减半衰期（交易日）
@@ -76,7 +76,7 @@ PRIOR_SIGMA = 0.02             # 先验日超额收益标准差
 
 # ================= 夜间回测 =================
 BT_DAYS = 120                  # 回放最近多少个交易日（约半年，覆盖不同市场阶段）
-BT_TOP_K = 5                   # 每个策略每天取前几只
+BT_TOP_K = 10                  # 每个策略每天取前几只（与实盘每日推荐数一致）
 BT_FETCH_BUDGET = 40 * 60      # 夜间回测补拉历史数据的时间预算（秒），超出的下次继续
 BT_PRIOR_SHRINK = 0.5          # 回测结果用作先验时打的折扣（回测通常比实盘乐观）
 BT_PRIOR_N = 4                 # 回测先验相当于多少个实盘样本
