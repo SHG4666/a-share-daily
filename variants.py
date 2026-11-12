@@ -116,6 +116,9 @@ def _limitup(U, p):
          & (U["ma5"] >= U["ma20"]))
     if p.get("first"):
         m &= U["zt_first"] == 1
+    if p.get("mcap_max"):  # 小盘低价：涨停统计显示启动价低、市值小的首板更容易走出连板
+        mc = U["mcap"] if "mcap" in U.columns else pd.Series(np.nan, index=U.index)
+        m &= (mc <= p["mcap_max"]) & (U["close"] <= p["px_max"])
     F = lambda d: {"shrink": (.30, -d["v_zt"], "涨停后明显缩量，抛压轻"),  # noqa: E731
                    "hold": (.30, d["hold_zt"], "回踩不破涨停价，承接强"),
                    "trend": (.20, d["trend20"], "短期趋势向上"),
@@ -221,6 +224,11 @@ VARIANTS = [
     Variant("涨停回踩", "limitup", dict(since=(2, 8), hold=-0.05, vz=0.60, pct=(-3.0, 3.0), first=True)),
     Variant("涨停回踩·紧", "limitup", dict(since=(2, 6), hold=-0.02, vz=0.50, pct=(-2.0, 2.0), first=True)),
     Variant("涨停次日承接", "limitup", dict(since=(1, 1), hold=-0.04, vz=1.80, pct=(-3.0, 4.0), first=True)),
+    # 小盘低价版（股票池本身要求市值≥50亿，这里在池内再取市值≤100亿、股价≤15元）
+    Variant("涨停回踩·小盘低价", "limitup", dict(since=(2, 8), hold=-0.05, vz=0.60, pct=(-3.0, 3.0), first=True,
+                                           mcap_max=100e8, px_max=15.0)),
+    Variant("涨停次日承接·小盘低价", "limitup", dict(since=(1, 1), hold=-0.04, vz=1.80, pct=(-3.0, 4.0), first=True,
+                                             mcap_max=100e8, px_max=15.0)),
 ]
 BY_NAME = {v.name: v for v in VARIANTS}
 DEFAULT_ROSTER = ["强势延续", "趋势回踩", "底部启动", "稳健多因子"]
@@ -278,7 +286,7 @@ def s1_scores(static: pd.DataFrame) -> pd.Series:
 
 
 # ================================================================ 截面构造（实盘与回测共用）
-STATIC_COLS = ["代码", "名称", "industry", "市盈率-动态", "市净率", "换手率", "最新价", "涨跌幅"]
+STATIC_COLS = ["代码", "名称", "industry", "市盈率-动态", "市净率", "换手率", "最新价", "涨跌幅", "总市值"]
 
 
 def make_panel(static: pd.DataFrame, hists: dict, dates: set | None) -> pd.DataFrame:
@@ -290,6 +298,8 @@ def make_panel(static: pd.DataFrame, hists: dict, dates: set | None) -> pd.DataF
     st = static[[c for c in STATIC_COLS if c in static.columns]].drop_duplicates("代码").copy()
     st["s1"] = st["代码"].map(s1_scores(st))
     df = F.merge(st, left_on="code", right_on="代码", how="inner")
+    if "总市值" in df.columns:  # 历史市值 ≈ 当前总股本 × 当时前复权价
+        df["mcap"] = (df["总市值"] / df["最新价"] * df["close"]).astype("float32")
     return df
 
 
