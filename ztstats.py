@@ -126,9 +126,11 @@ def load_gdhs(day: dt.date) -> pd.DataFrame:
             df.to_csv(p, index=False)
             parts.append(df)
             print(f"股东户数 {qe}：{len(df)} 条")
+            time.sleep(3)
         except Exception as e:  # noqa: BLE001
             print(f"股东户数 {qe} 失败：{str(e)[:100]}")
             data.EM_STATE["dead"] = False
+            time.sleep(5)
             if p.exists():
                 parts.append(pd.read_csv(p, dtype={"代码": str}))
     if not parts:
@@ -146,7 +148,7 @@ def load_gdhs(day: dt.date) -> pd.DataFrame:
 
 
 # ================================================================ 事件与样本
-def scan(store, codes, names, day):
+def scan(store, codes, names, day, since: dt.date):
     ev, runs = [], []
     for code in codes:
         h = store.get(code)
@@ -158,7 +160,7 @@ def scan(store, codes, names, day):
             continue
         zt = f["zt"].to_numpy() == 1
         n = len(f)
-        lo_i = max(0, n - WINDOW)
+        lo_i = int(np.searchsorted(np.array(f["date"].tolist(), dtype="datetime64[D]"), np.datetime64(since)))
         board = f["board"].to_numpy()
         dates = f["date"].to_numpy()
         idx = np.where(zt[lo_i:])[0] + lo_i
@@ -271,7 +273,9 @@ def main():
     left = ensure_all(store, codes, day, traded)
     store.save()
 
-    E, R = scan(store, [c for c in codes if store.get(c) is not None], names, day)
+    past = [d for d in tdays if d <= day]
+    since = past[-WINDOW] if len(past) >= WINDOW else past[0]
+    E, R = scan(store, [c for c in codes if store.get(c) is not None], names, day, since)
     print(f"涨停事件 {len(E)} 条，连续涨停样本 {len(R)} 段，用时 {time.time() - t0:.0f}s")
     E = E.sort_values(["date", "board"], ascending=[True, False])
 
@@ -303,6 +307,9 @@ def main():
     wk_txt, wk_n, wk_u = period_top(E, wk0, day)
     mo_txt, mo_n, mo_u = period_top(E, mo0, day)
     today = E[E["date"] == day]
+    yz = R2.groupby("yizi")["height"].apply(lambda h: (h >= 3).mean())
+    yz_line = (f"**首板是否一字板**　一字板：晋级3板 **{yz.get(1.0, np.nan):.1%}**｜非一字：{yz.get(0.0, np.nan):.1%}"
+               "（一字板多为重组、复牌等消息驱动，首板量比低大多是这个原因）")
     fm = {k: (lab, f) for k, lab, f in FEATS}
     med_lines = []
     for k, _, _ in FEATS:
@@ -321,7 +328,7 @@ def main():
                 + "\n".join(med_lines)),
         card.HR,
         card.md("**🎯 哪些特征最能区分能走出连板的股票**（按特征分五档，比较首板晋级 3 板的概率）\n"
-                + "\n".join(lift_lines(B, base3)) if len(B) else "样本不足"),
+                + "\n".join(lift_lines(B, base3) + [yz_line]) if len(B) else "样本不足"),
         {"tag": "note", "elements": [{"tag": "plain_text", "content":
             f"全市场剔除 ST/北交所，不限市值；有历史数据 {sum(store.get(c) is not None for c in codes)} 只"
             + (f"（还有 {left} 只下次补齐）" if left else "") +
