@@ -15,10 +15,14 @@ on:
         type: boolean
         default: false
       mode:
-        description: "full：回测并推送；build：只构建/补齐全市场历史缓存"
+        description: "full：回测并推送；build：只构建/补齐全市场历史缓存；zt：只跑涨停统计"
         type: choice
-        options: [full, build]
+        options: [full, build, zt]
         default: full
+      zt_card:
+        description: "涨停统计卡片今天也推送（默认只在每周最后一个交易日推送）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -52,6 +56,20 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
           SPOT_SOURCE: tencent
           BT_MODE: ${{ github.event.inputs.mode || 'full' }}
+          PYTHONUNBUFFERED: "1"
+          TZ: Asia/Shanghai
+      - name: 涨停统计与连板股特征
+        if: always() && github.event.inputs.mode != 'build'
+        continue-on-error: true
+        timeout-minutes: 40
+        run: python ztstats.py
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          ZT_CARD: ${{ github.event.inputs.zt_card == 'true' && '1' || '0' }}
+          SPOT_SOURCE: tencent
           PYTHONUNBUFFERED: "1"
           TZ: Asia/Shanghai
       - name: 保存历史行情缓存

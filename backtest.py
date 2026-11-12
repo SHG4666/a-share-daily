@@ -141,6 +141,8 @@ def load_prior() -> dict:
 
 def main():
     t0 = time.time()
+    if os.getenv("BT_MODE") == "zt":
+        print("只跑涨停统计，跳过回测"); return
     dry = os.getenv("DRY_RUN") == "1"
     tdays = data.trade_days()
     day, why = data.target_day(tdays)

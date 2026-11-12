@@ -311,6 +311,22 @@ def rule_journal(m: dict, ph: str, top_ind: list, ladder: pd.DataFrame, bt_line:
     return "".join(s)
 
 
+def period_ranks(day: dt.date, zt: pd.DataFrame, k: int = 6) -> str:
+    """本周 / 本月涨停次数榜：历史来自夜间 ztstats.py 生成的 data/zt_events.csv，今天来自涨停池"""
+    path = data.DATA_DIR / "zt_events.csv"
+    E = pd.read_csv(path, dtype={"code": str}) if path.exists() else pd.DataFrame(columns=["date", "code", "name"])
+    E["date"] = pd.to_datetime(E["date"]).dt.date
+    E = pd.concat([E[E["date"] < day][["date", "code", "name"]],
+                   pd.DataFrame({"date": day, "code": zt["代码"], "name": zt["名称"]})], ignore_index=True)
+    out = []
+    for lab, start in (("本周", day - dt.timedelta(days=day.weekday())), ("本月", day.replace(day=1))):
+        s = E[E["date"] >= start]
+        g = s.groupby(["code", "name"]).size().sort_values(ascending=False)
+        top = "、".join(f"{card.link(n, c)}×{v}" for (c, n), v in g.head(k).items() if v >= 2) or "暂无涨停 2 次以上的股票"
+        out.append(f"**{lab}**涨停 {len(s)} 次 / {s['code'].nunique()} 只｜次数最多：{top}")
+    return "**📅 涨停统计**\n" + "\n".join(out)
+
+
 # ================================================================ 主流程
 def main():
     dry = os.getenv("DRY_RUN") == "1"
@@ -413,6 +429,10 @@ def main():
                    f"**周期判断**　{ph}")]
     if top_ind:
         els.append(card.md("**涨停主线**　" + "　".join(f"{a} **{b}**" for a, b in top_ind)))
+    try:
+        els.append(card.md(period_ranks(day, zt)))
+    except Exception as e:  # noqa: BLE001
+        print("本周/本月涨停榜失败:", e)
     lad = ladder[ladder["连板"] >= 2]
     if len(lad):
         rows = []
