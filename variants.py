@@ -16,9 +16,10 @@ import config
 from model import diversify, neutral_z
 
 FAMILY_TAG = {"momentum": "🔥", "pullback": "↩️", "bottom": "🚀", "stable": "🛡️",
-              "breakout": "💥", "oversold": "🪃", "lowvol": "🐢"}
+              "breakout": "💥", "oversold": "🪃", "lowvol": "🐢", "limitup": "⚡"}
 FAMILY_NAME = {"momentum": "强势延续", "pullback": "趋势回踩", "bottom": "底部启动", "stable": "稳健多因子",
-               "breakout": "放量突破", "oversold": "超跌反弹", "lowvol": "低波稳涨"}
+               "breakout": "放量突破", "oversold": "超跌反弹", "lowvol": "低波稳涨",
+               "limitup": "涨停回踩"}
 
 
 def limit_of(codes: pd.Series) -> np.ndarray:
@@ -107,8 +108,24 @@ def _lowvol(U, p):
     return m, F
 
 
+def _limitup(U, p):
+    """涨停后的回踩/承接：涨停当天买不进，等之后缩量回踩、不破涨停支撑时介入。
+    since：距最近一次涨停的交易日数；hold：涨停后最低点相对涨停收盘价的下限；vz：今日量/涨停当天量 上限"""
+    m = (U["since_zt"].between(*p["since"]) & (U["hold_zt"] >= p["hold"]) & (U["v_zt"] <= p["vz"])
+         & U["pct"].between(*p["pct"]) & (U["close"] >= U["zt_lowp"]) & (U["r20"] <= 0.60)
+         & (U["ma5"] >= U["ma20"]))
+    if p.get("first"):
+        m &= U["zt_first"] == 1
+    F = lambda d: {"shrink": (.30, -d["v_zt"], "涨停后明显缩量，抛压轻"),  # noqa: E731
+                   "hold": (.30, d["hold_zt"], "回踩不破涨停价，承接强"),
+                   "trend": (.20, d["trend20"], "短期趋势向上"),
+                   "fresh": (.20, -d["r20"], "累计涨幅不大，位置不高")}
+    return m, F
+
+
 RULES = {"momentum": _momentum, "pullback": _pullback, "bottom": _bottom, "stable": _stable,
-         "breakout": _breakout, "oversold": _oversold, "lowvol": _lowvol}
+         "breakout": _breakout, "oversold": _oversold, "lowvol": _lowvol,
+         "limitup": _limitup}
 
 
 def stop_price(fam: str, d: pd.DataFrame) -> pd.Series:
@@ -122,6 +139,8 @@ def stop_price(fam: str, d: pd.DataFrame) -> pd.Series:
         return d["low5"]
     if fam in ("lowvol",):
         return d["ma60"]
+    if fam in ("limitup",):
+        return d["zt_lowp"]
     return d["close"] - 2 * d["atr14"]
 
 
@@ -143,6 +162,9 @@ def detail(fam: str, r) -> str:
             return (f"突破60日新高｜突破前箱体 {r['box60']:.0%}｜量能 {r['v5_20']:.1f} 倍｜20日 {r['r20']:+.0%}")
         if fam == "oversold":
             return (f"5日 {r['r5']:+.0%}｜距20日线 {r['dist20']:+.0%}｜60日 {r['r60']:+.0%}｜量能 {r['v5_20']:.1f} 倍")
+        if fam == "limitup":
+            return (f"{int(r['since_zt'])} 天前{'首板' if r['zt_first'] == 1 else '涨停'}｜涨停后最低 {r['hold_zt']:+.1%}（相对涨停价）｜"
+                    f"今日量为涨停日的 {r['v_zt']:.0%}｜近20日涨停 {int(r['zt_n20'])} 次｜20日 {r['r20']:+.0%}")
         if fam == "lowvol":
             return (f"60日 {r['r60']:+.0%}（R² {r['r2_60']:.2f}）｜波动 {r['vol60']:.0%}｜60日回撤 {r['mdd60']:.0%}")
     except Exception:  # noqa: BLE001
@@ -195,6 +217,10 @@ VARIANTS = [
     Variant("超跌反弹·深", "oversold", dict(r5=-0.15, dist=-0.12)),
     Variant("低波稳涨", "lowvol", dict(vol=0.30, r2=0.60)),
     Variant("低波稳涨·宽", "lowvol", dict(vol=0.40, r2=0.50)),
+    # 涨停系（来自每日涨停复盘：首板后缩量回踩不破涨停价，是常见的“主力洗盘后二波”形态）
+    Variant("涨停回踩", "limitup", dict(since=(2, 8), hold=-0.05, vz=0.60, pct=(-3.0, 3.0), first=True)),
+    Variant("涨停回踩·紧", "limitup", dict(since=(2, 6), hold=-0.02, vz=0.50, pct=(-2.0, 2.0), first=True)),
+    Variant("涨停次日承接", "limitup", dict(since=(1, 1), hold=-0.04, vz=1.80, pct=(-3.0, 4.0), first=True)),
 ]
 BY_NAME = {v.name: v for v in VARIANTS}
 DEFAULT_ROSTER = ["强势延续", "趋势回踩", "底部启动", "稳健多因子"]

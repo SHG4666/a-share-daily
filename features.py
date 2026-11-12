@@ -31,7 +31,8 @@ def _window_stat(arr: np.ndarray, n: int, fn) -> np.ndarray:
     return out
 
 
-def compute(h: pd.DataFrame) -> pd.DataFrame | None:
+def compute(h: pd.DataFrame, lim: float = 10.0) -> pd.DataFrame | None:
+    """lim：涨跌停幅度（%），主板 10，创业板/科创板 20"""
     if h is None or len(h) < MIN_ROWS:
         return None
     h = h.reset_index(drop=True)
@@ -92,6 +93,24 @@ def compute(h: pd.DataFrame) -> pd.DataFrame | None:
             f[k] = np.nan
     f["tight"] = ret.shift(5).rolling(25).std() / ret.rolling(120).std()
 
+    # 涨停特征（日线近似：涨幅达到涨停幅度且收在最高价 = 封板；最高价触及涨停但没封住 = 炸板）
+    pct = f["pct"]
+    zt = (pct >= lim - 0.2) & (c >= hi * 0.9995)
+    f["zt"] = zt.astype(float)
+    f["zb"] = ((hi / prev - 1) * 100 >= lim - 0.2).astype(float) * (~zt)
+    f["board"] = zt.astype(float).groupby((~zt).cumsum()).cumsum()       # 当前连板数（今天没涨停为 0）
+    f["zt_n20"] = zt.astype(float).rolling(20).sum()                      # 近 20 日涨停次数
+    pos = pd.Series(np.arange(len(c), dtype=float))
+    f["since_zt"] = pos - pos.where(zt).ffill()                           # 距最近一次涨停的交易日数
+    first = zt & (zt.astype(float).rolling(21, min_periods=1).sum() == 1)  # 前 20 日没涨停过的“首板”
+    f["zt_first"] = first.astype(float).where(zt).ffill()                 # 最近一次涨停是否首板
+    f["zt_close"] = c.where(zt).ffill()
+    f["zt_lowp"] = lo.where(zt).ffill()                                   # 涨停当天最低价（常用支撑位）
+    f["v_zt"] = v / v.where(zt).ffill()                                   # 今日量 / 涨停当天量
+    seg = zt.cumsum()
+    low_since = lo.mask(zt, np.inf).groupby(seg).cummin().replace(np.inf, np.nan)
+    f["hold_zt"] = low_since / f["zt_close"] - 1                          # 涨停后最低点相对涨停收盘价
+
     # 前瞻收益（只用于回测评分）
     for k in (1, 3, 5, 10):
         f[f"f{k}"] = c.shift(-k) / c - 1
@@ -105,7 +124,7 @@ def panel(hists: dict, dates: set | None = None) -> pd.DataFrame:
     """多只股票的指标拼成长表（code, date, 指标...）；dates 给定时只保留这些日期，节省内存"""
     parts = []
     for code, h in hists.items():
-        f = compute(h)
+        f = compute(h, 20.0 if str(code).startswith(("688", "300", "301")) else 10.0)
         if f is None:
             continue
         if dates is not None:

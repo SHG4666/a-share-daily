@@ -55,6 +55,19 @@ jobs:
           SPOT_SOURCE: ${{ github.event.inputs.spot_source }}
           PYTHONUNBUFFERED: "1"
           TZ: Asia/Shanghai
+      - name: 涨停复盘（单独一张飞书卡片）
+        if: always()
+        continue-on-error: true
+        run: python limitup.py
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FORCE_RUN: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          SPOT_SOURCE: ${{ github.event.inputs.spot_source }}
+          PYTHONUNBUFFERED: "1"
+          TZ: Asia/Shanghai
       - name: 保存历史行情缓存
         if: always()
         uses: actions/cache/save@v4
