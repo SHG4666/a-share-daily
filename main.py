@@ -205,7 +205,7 @@ def main():
     try:
         acc_df = accum.scan(U)
         acc_hist = accum.evaluate(accum.load(), tdays, day, hist, index_df)
-        acc_track = accum.track_line(acc_hist)
+        acc_track = "\n".join(x for x in [accum.bt_line(), accum.track_line(acc_hist)] if x) or None
         print(f"疑似吸筹：{int(acc_df['pool'].iloc[0]) if len(acc_df) else 0} 只满足条件")
     except Exception as e:  # noqa: BLE001
         import traceback; traceback.print_exc()

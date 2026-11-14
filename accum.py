@@ -91,3 +91,17 @@ def track_line(df: pd.DataFrame) -> str | None:
             parts.append(f"{k}日：{len(x)} 只，平均 {x[f'r{k}'].mean():+.1%}，上涨 {(x[f'r{k}'] > 0).mean():.0%}，"
                          f"相对沪深300 {ex:+.1%}")
     return "历史扫描结果跟踪｜" + "；".join(parts) if parts else None
+
+
+def bt_line() -> str | None:
+    """最近一次夜间回测里“主力吸筹”相对随机选股的表现，让读者知道这份名单历史上有没有用"""
+    try:
+        b = pd.read_csv(DATA_DIR / "backtest.csv", dtype={"run_date": str})
+        b = b[b["run_date"] == b["run_date"].max()].set_index("strategy")
+        a, r = b.loc["主力吸筹"], b.loc["随机基准"]
+        verdict = ("跑赢随机选股" if a["mean5"] > r["mean5"] and a["mean10"] > r["mean10"] else
+                   "和随机选股差不多" if abs(a["mean5"] - r["mean5"]) < 0.003 else "跑输随机选股")
+        return (f"回测（近120个交易日，{int(a['n'])} 次信号）：5日平均 {a['mean5']:+.1%}、10日平均 {a['mean10']:+.1%}；"
+                f"随机选股 5日 {r['mean5']:+.1%}、10日 {r['mean10']:+.1%}——{verdict}，仅作观察名单")
+    except Exception:  # noqa: BLE001
+        return None
