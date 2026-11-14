@@ -408,6 +408,9 @@ def main():
         lines.append(bt_line.replace("**", ""))
     digest = "\n".join(lines)
     print(digest)
+    if not dry:  # 给每日观点报告用（market.py 会并入盘面摘要）
+        (data.DATA_DIR / "market").mkdir(parents=True, exist_ok=True)
+        (data.DATA_DIR / "market" / f"{day.isoformat()}-limitup.txt").write_text(digest)
     journal = ai_journal(digest)
     jsrc = "AI" if journal else "规则"
     if not journal:

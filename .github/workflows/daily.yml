@@ -68,6 +68,15 @@ jobs:
           SPOT_SOURCE: ${{ github.event.inputs.spot_source }}
           PYTHONUNBUFFERED: "1"
           TZ: Asia/Shanghai
+      - name: 盘面数据摘要（给每日观点报告用）
+        if: always()
+        continue-on-error: true
+        run: python market.py
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          SPOT_SOURCE: tencent
+          PYTHONUNBUFFERED: "1"
+          TZ: Asia/Shanghai
       - name: 保存历史行情缓存
         if: always()
         uses: actions/cache/save@v4

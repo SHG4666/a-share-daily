@@ -1,0 +1,41 @@
+name: 每日观点报告推送
+
+# 观点报告由 Claude 定时任务撰写并提交到 data/reports/，提交后自动推送到飞书（纯文字）。
+on:
+  push:
+    branches: [main]
+    paths: ["data/reports/**.md"]
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "要推送的报告日期（YYYY-MM-DD），留空则推送最新一篇"
+        required: false
+        default: ""
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 找出要推送的报告
+        id: files
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.date }}" ]; then f="data/reports/${{ github.event.inputs.date }}.md"; else f=$(ls data/reports/*.md | sort | tail -1); fi
+          else
+            f=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'data/reports/*.md' | tr '\n' ' ')
+          fi
+          echo "files=$f" >> "$GITHUB_OUTPUT"
+          echo "待推送：$f"
+      - run: python send_report.py ${{ steps.files.outputs.files }}
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
