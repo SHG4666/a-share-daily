@@ -158,6 +158,7 @@ def get_spot() -> pd.DataFrame:
             df["代码"] = df["代码"].astype(str).str.zfill(6)
             df.loc[df["最新价"] <= 0, "最新价"] = float("nan")  # 停牌
             # 成交量统一成“手”：腾讯对科创板等报的是“股”，用成交额反推校验，差 100 倍的除以 100
+            df["成交量"] = df["成交量"].astype(float)
             implied = df["成交额"] / (df["最新价"] * 100)
             bad = (df["成交量"] / implied) > 20
             if bad.any():
