@@ -43,12 +43,31 @@ class Store:
                 self.h.update(loaded)
                 self.loaded = len(self.h)
                 print(f"历史缓存：载入 {len(self.h)} 只")
+                self.repair_units()
             except Exception as e:  # noqa: BLE001
                 print("历史缓存损坏，重建:", e)
                 self.h.clear()
         else:
             print("历史缓存：不存在，将从头构建")
         return self
+
+    def repair_units(self):
+        """修复历史上用错单位追加的成交量：腾讯快照对科创板报“股”，曾被当成“手”追加，导致当天量放大 100 倍。
+        判定：科创板股票某天成交量 > 前 20 天中位数的 30 倍，且除以 100 后回到正常范围 → 除以 100"""
+        fixed = 0
+        for code, h in self.h.items():
+            if not code.startswith(("688", "689")) or h is None or len(h) < 22:
+                continue
+            v = h["vol"].to_numpy(float)
+            med = pd.Series(v).shift(1).rolling(20).median().to_numpy()
+            idx = np.where((v > 30 * med) & (v / 100 < 30 * med))[0]
+            idx = idx[idx >= len(v) - 30]  # 只看最近 30 天（增量追加的部分）
+            if len(idx):
+                v = v.copy(); v[idx] = v[idx] / 100
+                h["vol"] = v
+                fixed += len(idx)
+        if fixed:
+            print(f"历史缓存：修复科创板成交量单位 {fixed} 条")
 
     def save(self):
         PATH.parent.mkdir(exist_ok=True)
