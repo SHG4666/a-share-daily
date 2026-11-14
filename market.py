@@ -17,8 +17,12 @@
      - 趋势中缩量回调：20 日线在 60 日线上、60 日涨 ≥15%，从 20 日高点回撤 5–12%，近 5 日量 ≤ 20 日均量 0.7 倍 → 疑似洗盘
      - 底部放量异动：一年内从高点跌 ≥40%，当天量 ≥ 20 日均量 3 倍且涨 ≥5% → 疑似建仓/试盘
      - 放量突破新高：收盘创 60 日新高，量 ≥ 20 日均量 2 倍 → 疑似拉升
-  8. 情绪（来自涨停复盘 limitup.py 的摘要，如有）
-  9. 量化系统视角：上场策略、今日推荐、最新回测结论
+  8. 今日明星股档案（最多 8 只）：成交额第一、成交额前20中涨/跌幅最大、最高连板、涨停股中成交额最大、
+     底部放量异动和高位放量下跌中成交额最大的。每只给出 1/5/20/60 日走势、一年区间位置、量比、
+     上涨日/下跌日成交量比（资金进出的代理）、20/60 日成交量加权均价（近期持股成本区）、K 线形态、
+     连板数、龙虎榜席位，以及按规则推测的阶段（吸筹/洗盘/拉升/派发/出逃）
+  9. 情绪（来自涨停复盘 limitup.py 的摘要，如有）
+  10. 量化系统视角：上场策略、今日推荐、最新回测结论
 """
 import datetime as dt
 import json
@@ -131,6 +135,127 @@ def anomalies(store: histstore.Store, spot: pd.DataFrame, day: dt.date) -> dict[
     return out
 
 
+# ================================================================ 当日明星股档案
+def limit_pct(code: str, name: str = "") -> float:
+    if "ST" in str(name):
+        return 0.05
+    return 0.20 if code.startswith(("688", "689", "300", "301")) else 0.10
+
+
+def consec_limit(c: np.ndarray, lim: float) -> int:
+    n = 0
+    for i in range(len(c) - 1, 0, -1):
+        if c[i] / c[i - 1] - 1 >= lim - 0.003:
+            n += 1
+        else:
+            break
+    return n
+
+
+def pick_stars(spot: pd.DataFrame, store: histstore.Store, day: dt.date, an: dict) -> list[tuple[str, str]]:
+    """挑当日明星股：返回 [(代码, 入选理由)]，最多 8 只"""
+    s = spot[~spot["名称"].str.contains("ST|退", na=False) & spot["成交额"].notna()].copy()
+    top20 = s.sort_values("成交额", ascending=False).head(20)
+    picks: list[tuple[str, str]] = []
+
+    def add(code, why):
+        if code and code not in [c for c, _ in picks]:
+            picks.append((code, why))
+
+    if len(top20):
+        add(top20.iloc[0]["代码"], "全市场成交额第一，资金焦点")
+        up = top20.sort_values("涨跌幅", ascending=False).iloc[0]
+        if up["涨跌幅"] > 0:
+            add(up["代码"], f"成交额前20中涨幅最大（{up['涨跌幅']:+.1f}%），资金抢筹最强")
+        dn = top20.sort_values("涨跌幅").iloc[0]
+        if dn["涨跌幅"] < 0:
+            add(dn["代码"], f"成交额前20中跌幅最大（{dn['涨跌幅']:+.1f}%），资金出逃最凶")
+    # 连板最高（情绪龙头）
+    best, best_n = None, 1
+    for r in s[s["涨跌幅"] >= 9.5].itertuples():
+        h = store.get(r.代码)
+        if h is None or h["date"].iloc[-1] != day:
+            continue
+        n = consec_limit(h["close"].to_numpy(float)[-15:], limit_pct(r.代码, r.名称))
+        if n > best_n or (n == best_n and best is not None and r.成交额 > best[1]):
+            best, best_n = (r.代码, r.成交额), n
+    if best and best_n >= 2:
+        add(best[0], f"{best_n}连板，市场最高标，情绪龙头")
+    # 涨停股里成交额最大（题材核心）
+    zt = s[[r.涨跌幅 / 100 >= limit_pct(r.代码, r.名称) - 0.003 for r in s.itertuples()]]
+    if len(zt):
+        z = zt.sort_values("成交额", ascending=False).iloc[0]
+        add(z["代码"], f"涨停股中成交额最大（{z['成交额'] / 1e8:.0f}亿），题材核心")
+    # 底部放量异动、高位放量下跌里成交额最大的
+    for k, why in [("底部放量异动", "底部放量异动中成交额最大，疑似资金建仓/试盘"),
+                   ("高位放量下跌", "高位放量下跌中成交额最大，疑似出货")]:
+        if an.get(k):
+            add(an[k][0]["code"], why)
+    return picks[:8]
+
+
+def stage_of(f: dict) -> tuple[str, list[str]]:
+    """基于量价和成本的阶段推测（规则），返回 (阶段, 依据)"""
+    ev = []
+    if f["r20"] >= 0.25 and ((f["upper"] >= 0.5 and f["vr20"] >= 2) or (f["updown"] < 1 and f["close"] < f["ma5"])):
+        ev.append("20日涨幅已大" + ("，今日放量收长上影" if f["upper"] >= 0.5 else "，近20日下跌日成交量反超上涨日且跌破5日线"))
+        return "高位派发嫌疑", ev
+    if f["close"] < f["ma20"] < f["ma60"] and f["updown"] < 0.8 and f["r1"] <= -0.03:
+        ev.append("均线空头排列，下跌日放量，资金持续流出")
+        return "资金出逃/下跌中继", ev
+    if f["r20"] >= 0.15 and f["close"] > f["ma5"] > f["ma20"] and f["updown"] >= 1.5:
+        ev.append(f"沿5日线上行，上涨日成交量是下跌日的 {f['updown']:.1f} 倍")
+        return "主升/拉升阶段", ev
+    if f["ma20"] > f["ma60"] and -0.15 <= f["pull20"] <= -0.04 and f["v5_20"] < 0.8:
+        ev.append(f"中期趋势向上，从20日高点回撤 {f['pull20']:.0%}，量能缩至 {f['v5_20']:.1f} 倍")
+        return "洗盘嫌疑", ev
+    if f["pos250"] <= 0.3 and f["updown"] >= 1.3 and -0.05 <= f["r20"] <= 0.20:
+        ev.append(f"处于一年区间低位（{f['pos250']:.0%}），上涨日量能占优（{f['updown']:.1f} 倍）")
+        return "低位吸筹嫌疑", ev
+    if f["r1"] >= 0.05 and f["vr20"] >= 2.5 and f["pos250"] <= 0.4:
+        ev.append("低位突然放巨量大涨")
+        return "底部异动/试盘", ev
+    return "分歧震荡", ["多空信号交织，没有明确阶段特征"]
+
+
+def star_profile(code: str, name: str, why: str, h: pd.DataFrame, row, lb: dict | None) -> tuple[str, dict]:
+    c, v = h["close"].to_numpy(float), h["vol"].to_numpy(float)
+    hi, lo = h["high"].to_numpy(float), h["low"].to_numpy(float)
+    ret = np.diff(c[-21:]) / c[-21:-1]
+    vv = v[-20:]
+    f = dict(
+        close=c[-1], r1=c[-1] / c[-2] - 1, r5=c[-1] / c[-6] - 1, r20=c[-1] / c[-21] - 1, r60=c[-1] / c[-61] - 1,
+        ma5=c[-5:].mean(), ma20=c[-20:].mean(), ma60=c[-60:].mean(),
+        vr5=v[-1] / v[-6:-1].mean(), vr20=v[-1] / v[-21:-1].mean(), v5_20=v[-5:].mean() / v[-20:].mean(),
+        updown=(vv[ret > 0].sum() / vv[ret < 0].sum()) if vv[ret < 0].sum() > 0 else 9.9,
+        vwap20=(c[-20:] * v[-20:]).sum() / v[-20:].sum(), vwap60=(c[-60:] * v[-60:]).sum() / v[-60:].sum(),
+        pos250=(c[-1] - c[-250:].min()) / (c[-250:].max() - c[-250:].min()) if c[-250:].max() > c[-250:].min() else 0.5,
+        pull20=c[-1] / c[-20:].max() - 1, hi20=c[-20:].max(), lo20=c[-20:].min(),
+        upper=(hi[-1] - c[-1]) / (hi[-1] - lo[-1]) if hi[-1] > lo[-1] else 0.0,
+        amp=(hi[-1] - lo[-1]) / c[-2], boards=consec_limit(c[-15:], limit_pct(code, name)),
+        turnover=float(getattr(row, "换手率", np.nan)), amount=float(getattr(row, "成交额", np.nan)),
+    )
+    stage, ev = stage_of(f)
+    lines = [f"■ {name}（{code}）— {why}",
+             f"  走势：收 {f['close']:.2f}，今日 {pct(f['r1'])}，5日 {pct(f['r5'])}，20日 {pct(f['r20'])}，60日 {pct(f['r60'])}；"
+             f"一年区间位置 {f['pos250']:.0%}" + (f"；{f['boards']}连板" if f["boards"] >= 2 else ""),
+             f"  量能：成交 {yi(f['amount'])}，换手 {f['turnover']:.1f}%，量比（对5日）{f['vr5']:.1f}、（对20日）{f['vr20']:.1f}；"
+             f"近20日上涨日/下跌日成交量之比 {f['updown']:.1f}",
+             f"  成本：20日成交量加权均价 {f['vwap20']:.2f}（现价{pct(f['close'] / f['vwap20'] - 1, 1)}），"
+             f"60日 {f['vwap60']:.2f}（{pct(f['close'] / f['vwap60'] - 1, 1)}）；"
+             f"20日线 {f['ma20']:.2f}，60日线 {f['ma60']:.2f}，近20日区间 {f['lo20']:.2f}–{f['hi20']:.2f}",
+             f"  当日K线：振幅 {f['amp']:.1%}，收盘位于当日振幅的 {(1 - f['upper']):.0%} 位置" +
+             ("（长上影，冲高回落）" if f["upper"] >= 0.6 else "（收在高位）" if f["upper"] <= 0.15 else "")]
+    if lb:
+        seats = "、".join(lb.get("买方", [])[:5]) if lb.get("买方") else ""
+        lines.append(f"  龙虎榜：净买 {yi(lb.get('净买额'))}" + (f"，买方前五 {seats}" if seats else "")
+                     + (f"，买一 {lb['买一']}（占前五买入 {lb['买一占比']:.0%}）" if lb.get("买一") and pd.notna(lb.get("买一占比")) else "")
+                     + (f"，机构净买 {yi(lb['机构净买'])}" if pd.notna(lb.get("机构净买", np.nan)) else "")
+                     + (f"；上榜原因 {lb['原因']}" if lb.get("原因") else ""))
+    lines.append(f"  规则推测阶段：{stage}（{'；'.join(ev)}）")
+    return "\n".join(lines), {"code": code, "name": name, "why": why, "stage": stage, **{k: float(x) for k, x in f.items()}}
+
+
 def system_view(day: dt.date) -> list[str]:
     lines = []
     try:
@@ -226,10 +351,33 @@ def main():
         L.append(f"{k}（{desc[k]}）：{len(items)} 只" + (f"，如 {ex}" if items else ""))
     L.append("")
 
+    stars_js = []
+    try:
+        stars = pick_stars(spot, store, day, an)
+        info = spot.set_index("代码")
+        try:
+            import limitup
+            data.EM_STATE["dead"] = False
+            LB = limitup.lhb(day, [c for c, _ in stars])
+        except Exception as e:  # noqa: BLE001
+            print("明星股龙虎榜失败:", e); LB = {}
+        L.append("七、今日明星股档案（量价、成本与阶段为规则推测，供撰写主力操盘分析用）")
+        for code, why in stars:
+            h = store.get(code)
+            if h is None or len(h) < 250 or h["date"].iloc[-1] != day:
+                continue
+            row = info.loc[code]
+            txt, js = star_profile(code, row["名称"], why, h, row, LB.get(code))
+            L.append(txt); stars_js.append(js)
+        L.append("")
+    except Exception as e:  # noqa: BLE001
+        import traceback; traceback.print_exc()
+        print("明星股档案失败:", e)
+
     zt_file = OUT / f"{day.isoformat()}-limitup.txt"
     if zt_file.exists():
-        L += ["七、涨停与情绪（来自涨停复盘）", zt_file.read_text().strip(), ""]
-    L += ["八、量化系统视角"] + system_view(day)
+        L += ["八、涨停与情绪（来自涨停复盘）", zt_file.read_text().strip(), ""]
+    L += ["九、量化系统视角"] + system_view(day)
 
     text = "\n".join(L)
     print(text)
@@ -239,7 +387,7 @@ def main():
     (OUT / f"{day.isoformat()}.txt").write_text(text)
     (OUT / f"{day.isoformat()}.json").write_text(json.dumps(
         {"date": day.isoformat(), "indexes": idx_js, "amount": amt_today, "amount_ratio20": ratio,
-         "anomalies": {k: v[:20] for k, v in an.items()}}, ensure_ascii=False, indent=1, default=float))
+         "anomalies": {k: v[:20] for k, v in an.items()}, "stars": stars_js}, ensure_ascii=False, indent=1, default=float))
 
 
 if __name__ == "__main__":
