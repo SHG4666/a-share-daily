@@ -351,6 +351,23 @@ def main():
         L.append(f"{k}（{desc[k]}）：{len(items)} 只" + (f"，如 {ex}" if items else ""))
     L.append("")
 
+    try:  # 全市场吸筹扫描结果（main.py 同一次运行里写入 data/accum.csv）
+        import accum
+        A = accum.load()
+        today_acc = A[A["date"] == day.isoformat()]
+        L.append("六·补、疑似主力吸筹（全市场扫描：深跌低位 + 40日横盘 + 量增价平 + 上涨日量能占优 + OBV上行 + 底部抬高）")
+        if len(today_acc):
+            for r in today_acc.itertuples():
+                L.append(f"{r.name}（{r.code}）收 {r.close:.2f}，失效位 {r.stop:.2f}｜{r.detail}")
+        else:
+            L.append("今天没有符合条件的股票")
+        tl = accum.track_line(A)
+        if tl:
+            L.append(tl)
+        L.append("")
+    except Exception as e:  # noqa: BLE001
+        print("吸筹扫描摘要失败:", e)
+
     stars_js = []
     try:
         stars = pick_stars(spot, store, day, an)

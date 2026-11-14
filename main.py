@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import requests
 
+import accum
 import alloc
 import histstore
 import card
@@ -199,6 +200,17 @@ def main():
     picks = merge(cand, res, names)
     print("今日推荐", picks[["代码", "名称", "strategy", "score"]].to_string() if len(picks) else "无")
 
+    # 4.5) 全市场扫描：疑似主力吸筹建仓
+    acc_df, acc_hist, acc_track = pd.DataFrame(), None, None
+    try:
+        acc_df = accum.scan(U)
+        acc_hist = accum.evaluate(accum.load(), tdays, day, hist, index_df)
+        acc_track = accum.track_line(acc_hist)
+        print(f"疑似吸筹：{int(acc_df['pool'].iloc[0]) if len(acc_df) else 0} 只满足条件")
+    except Exception as e:  # noqa: BLE001
+        import traceback; traceback.print_exc()
+        print("吸筹扫描失败:", e)
+
     # 5) 复盘文本、跟踪池、战绩
     prev_day = max((d for d in tdays if d < day), default=None)
     review_txt = review.yesterday(rec, prev_day, spot_idx, review.index_ret_on(index_df, day))
@@ -217,13 +229,15 @@ def main():
         if kills:
             roster_mod.save(ros)
             roster_mod.log_changes(day, kills)
+        if acc_hist is not None:
+            accum.save(accum.record(acc_hist, day, acc_df))
 
     inds = data.get_top_industries(config.TOP_INDUSTRY_N)
     ind_txt = "、".join(inds["板块名称"]) if inds is not None else "未知"
     comment = ai_comment(regime["text"], ind_txt, picks)
 
     payload = card.build(day, spot, regime, inds, review_txt, adjust_txt, picks, pool_lines, board_txt,
-                         comment, details)
+                         comment, details, accum=(acc_df, acc_track))
     if dry:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     send_feishu(payload)

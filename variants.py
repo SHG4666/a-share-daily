@@ -15,9 +15,9 @@ import pandas as pd
 import config
 from model import diversify, neutral_z
 
-FAMILY_TAG = {"momentum": "🔥", "pullback": "↩️", "bottom": "🚀", "stable": "🛡️",
+FAMILY_TAG = {"accum": "🕵️", "momentum": "🔥", "pullback": "↩️", "bottom": "🚀", "stable": "🛡️",
               "breakout": "💥", "oversold": "🪃", "lowvol": "🐢", "limitup": "⚡"}
-FAMILY_NAME = {"momentum": "强势延续", "pullback": "趋势回踩", "bottom": "底部启动", "stable": "稳健多因子",
+FAMILY_NAME = {"accum": "主力吸筹", "momentum": "强势延续", "pullback": "趋势回踩", "bottom": "底部启动", "stable": "稳健多因子",
                "breakout": "放量突破", "oversold": "超跌反弹", "lowvol": "低波稳涨",
                "limitup": "涨停回踩"}
 
@@ -126,7 +126,23 @@ def _limitup(U, p):
     return m, F
 
 
-RULES = {"momentum": _momentum, "pullback": _pullback, "bottom": _bottom, "stable": _stable,
+def _accum(U, p):
+    """疑似主力吸筹建仓：深跌后的低位，40 日横盘不涨，但成交量比之前明显放大、上涨日量能占优、OBV 上行，底部抬高。
+    即“量增价平、资金净流入却不拉价”——还没启动，是建仓的特征，而不是拉升或出货"""
+    m = ((U["pos250"] <= p["pos"]) & (U["dd250"] <= -p["dd"]) & (U["box40"] <= p["box"])
+         & (U["r40"].abs() <= 0.12) & (U["r5"] <= 0.08) & (U["r20"] <= 0.15)
+         & (U["updown40"] >= p["ud"]) & (U["obv_trend"] > p["obv"]) & (U["vol_up"] >= p["vu"])
+         & (U["low_rise"] >= -0.02) & (U["vol_squeeze"] <= 1.1))
+    F = lambda d: {"flow": (.25, np.log(d["updown40"].clip(upper=4)), "上涨日成交量明显多于下跌日，资金净流入"),  # noqa: E731
+                   "obv": (.25, d["obv_trend"], "OBV 上行而股价横盘，量价背离"),
+                   "vol": (.15, np.log(d["vol_up"].clip(upper=4)), "横盘期成交量比之前放大"),
+                   "box": (.15, -d["box40"], "箱体窄，筹码在收集"),
+                   "lowrise": (.10, d["low_rise"], "底部逐步抬高"),
+                   "low": (.10, -d["pos250"], "处于一年低位")}
+    return m, F
+
+
+RULES = {"accum": _accum, "momentum": _momentum, "pullback": _pullback, "bottom": _bottom, "stable": _stable,
          "breakout": _breakout, "oversold": _oversold, "lowvol": _lowvol,
          "limitup": _limitup}
 
@@ -144,6 +160,8 @@ def stop_price(fam: str, d: pd.DataFrame) -> pd.Series:
         return d["ma60"]
     if fam in ("limitup",):
         return d["zt_lowp"]
+    if fam in ("accum",):
+        return d["low40"] * 0.98  # 跌破箱体底部说明吸筹判断失效
     return d["close"] - 2 * d["atr14"]
 
 
@@ -165,6 +183,10 @@ def detail(fam: str, r) -> str:
             return (f"突破60日新高｜突破前箱体 {r['box60']:.0%}｜量能 {r['v5_20']:.1f} 倍｜20日 {r['r20']:+.0%}")
         if fam == "oversold":
             return (f"5日 {r['r5']:+.0%}｜距20日线 {r['dist20']:+.0%}｜60日 {r['r60']:+.0%}｜量能 {r['v5_20']:.1f} 倍")
+        if fam == "accum":
+            return (f"距一年高点 {r['dd250']:.0%}｜40日箱体 {r['box40']:.0%}（40日 {r['r40']:+.0%}）｜"
+                    f"上涨/下跌日量比 {r['updown40']:.1f}｜横盘期量能 {r['vol_up']:.1f} 倍｜"
+                    f"OBV 40日净增 {r['obv_trend']:+.0%}｜近20日低点较前20日 {r['low_rise']:+.1%}")
         if fam == "limitup":
             return (f"{int(r['since_zt'])} 天前{'首板' if r['zt_first'] == 1 else '涨停'}｜涨停后最低 {r['hold_zt']:+.1%}（相对涨停价）｜"
                     f"今日量为涨停日的 {r['v_zt']:.0%}｜近20日涨停 {int(r['zt_n20'])} 次｜20日 {r['r20']:+.0%}")
@@ -221,6 +243,8 @@ VARIANTS = [
     Variant("低波稳涨", "lowvol", dict(vol=0.30, r2=0.60)),
     Variant("低波稳涨·宽", "lowvol", dict(vol=0.40, r2=0.50)),
     # 涨停系（来自每日涨停复盘：首板后缩量回踩不破涨停价，是常见的“主力洗盘后二波”形态）
+    Variant("主力吸筹", "accum", dict(pos=0.35, dd=0.30, box=0.25, ud=1.2, obv=0.0, vu=1.1)),
+    Variant("主力吸筹·严格", "accum", dict(pos=0.30, dd=0.35, box=0.18, ud=1.4, obv=0.05, vu=1.25)),
     Variant("涨停回踩", "limitup", dict(since=(2, 8), hold=-0.05, vz=0.60, pct=(-3.0, 3.0), first=True)),
     Variant("涨停回踩·紧", "limitup", dict(since=(2, 6), hold=-0.02, vz=0.50, pct=(-2.0, 2.0), first=True)),
     Variant("涨停次日承接", "limitup", dict(since=(1, 1), hold=-0.04, vz=1.80, pct=(-3.0, 4.0), first=True)),

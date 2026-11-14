@@ -93,6 +93,21 @@ def compute(h: pd.DataFrame, lim: float = 10.0) -> pd.DataFrame | None:
             f[k] = np.nan
     f["tight"] = ret.shift(5).rolling(25).std() / ret.rolling(120).std()
 
+    # 主力吸筹特征（威科夫吸筹：低位横盘 + 量增价平 + 资金净流入但价格不涨 + 底部抬高）
+    upv = v.where(ret > 0, 0.0).rolling(40).sum()
+    dnv = v.where(ret < 0, 0.0).rolling(40).sum()
+    f["updown40"] = upv / dnv.replace(0, np.nan)                       # 上涨日 / 下跌日成交量（资金进出代理）
+    obv = (np.sign(ret.fillna(0)) * v).cumsum()
+    obv_slope, _ = _roll_linreg(obv, 40)
+    f["obv_trend"] = obv_slope * 40 / v.rolling(40).sum()              # 40 日 OBV 净增量 / 40 日总成交量
+    f["vol_up"] = v.rolling(60).mean() / v.shift(60).rolling(120).mean()  # 近 60 日均量 / 之前 120 日（横盘期 vs 下跌期）
+    f["box40"] = c.rolling(40).max() / c.rolling(40).min() - 1         # 40 日箱体宽度
+    f["r40"] = c / c.shift(40) - 1
+    f["low_rise"] = lo.rolling(20).min() / lo.shift(20).rolling(20).min() - 1  # 底部是否抬高
+    f["vol_squeeze"] = ret.rolling(20).std() / ret.rolling(120).std()       # 波动收敛
+    f["dd250"] = c / c.rolling(250, min_periods=120).max() - 1          # 距一年高点
+    f["low40"] = lo.rolling(40).min()
+
     # 涨停特征（日线近似：涨幅达到涨停幅度且收在最高价 = 封板；最高价触及涨停但没封住 = 炸板）
     pct = f["pct"]
     zt = (pct >= lim - 0.2) & (c >= hi * 0.9995)
