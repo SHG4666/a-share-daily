@@ -87,10 +87,30 @@ def to_date(s) -> pd.Series:
     return pd.to_datetime(s).dt.date
 
 
+def _trade_days_from_index() -> list[dt.date]:
+    """兜底：用上证指数的历史日期当交易日历。
+    指数当天数据可能还没更新，所以工作日 15:30 后把今天也算进去（极少数工作日休市会误判，只在兜底模式下发生）"""
+    import akshare as ak
+    days = set(to_date(ak.stock_zh_index_daily(symbol="sh000001")["date"]))
+    now = dt.datetime.now(TZ_CN)
+    if now.weekday() < 5 and now.hour * 100 + now.minute >= 1530:
+        days.add(now.date())
+    print("⚠️ 交易日历改用上证指数日期兜底")
+    return sorted(days)
+
+
 @retry()
 def trade_days() -> list[dt.date]:
     import akshare as ak
-    return sorted(to_date(ak.tool_trade_date_hist_sina()["trade_date"]))
+    fn = getattr(ak, "tool_trade_date_hist_sina", None)
+    if fn is not None:
+        try:
+            return sorted(to_date(fn()["trade_date"]))
+        except Exception as e:  # noqa: BLE001
+            print("交易日历接口失败:", str(e)[:100])
+    else:
+        print("⚠️ 当前 akshare 版本没有 tool_trade_date_hist_sina")
+    return _trade_days_from_index()
 
 
 SPOT_COLS = ["代码", "名称", "最新价", "涨跌幅", "成交额", "换手率", "市盈率-动态", "市净率", "总市值",
