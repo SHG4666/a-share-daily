@@ -179,12 +179,14 @@ def main():
     bh = breadth_history(store, days)
     bh = bh[bh["date"].isin(days)]
     amt_today = spot["成交额"].sum()
+    if len(bh) and bh["amount"].iloc[-1] > 0:  # 缓存口径只用于看相对变化，绝对值按今天快照的全市场成交额缩放
+        bh["amount"] = bh["amount"] * amt_today / bh["amount"].iloc[-1]
     ratio = bh["amount"].iloc[-1] / bh["amount"].iloc[-21:-1].mean() if len(bh) >= 6 else np.nan
     L += ["二、量能与涨跌结构",
-          f"全市场成交额 {amt_today / 1e12:.2f} 万亿；成交额为近20日均值的 {ratio:.2f} 倍（按缓存中约{len(store.h)}只股票计）",
+          f"全市场成交额 {amt_today / 1e12:.2f} 万亿；为近20日均值的 {ratio:.2f} 倍",
           f"上涨 {int((spot['涨跌幅'] > 0).sum())} 家，下跌 {int((spot['涨跌幅'] < 0).sum())} 家，"
           f"中位数涨跌 {spot['涨跌幅'].median():+.2f}%",
-          "近10个交易日（缓存口径）：" + "；".join(
+          "近10个交易日（成交额按今天口径折算）：" + "；".join(
               f"{r.date:%m-%d} 涨{int(r.up)}/跌{int(r.down)} 涨停{int(r.zt)} 跌停{int(r.dt)} 额{r.amount / 1e12:.2f}万亿"
               for r in bh.tail(10).itertuples()), ""]
 
